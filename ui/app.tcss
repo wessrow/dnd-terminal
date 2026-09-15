@@ -1,0 +1,83 @@
+Screen {
+    background: $surface;
+}
+
+#sidebar {
+    width: 46;
+    padding: 1;
+}
+
+.panel {
+    border: round $primary;
+    padding: 0 1;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#hp-bar {
+    margin: 1 0;
+}
+
+TabbedContent {
+    width: 1fr;
+}
+
+DataTable {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#skills, #spells, #resources, #inventory, #conditions {
+    height: 1fr;
+}
+
+.detail {
+    border: round $secondary;
+    height: 1fr;
+    padding: 0 1;
+    overflow-y: auto;
+    margin-top: 1;
+}
+
+#active-effects {
+    border: round $warning;
+    height: auto;
+    max-height: 10;
+    padding: 0 1;
+    overflow-y: auto;
+    margin-top: 1;
+}
+
+.muted {
+    color: $text-muted;
+}
+
+/* #palette wraps #command-list + #prompt-bar as the ONE widget docked to the
+   bottom (alongside Footer) - Textual's compositor mis-clips scrolled content in
+   a docked OptionList when there are 3+ widgets docked to the same edge, so
+   #command-list and #prompt-bar must NOT be docked independently. See CLAUDE.md. */
+#palette {
+    dock: bottom;
+    height: auto;
+}
+
+#prompt-bar {
+    display: none;
+    border: none;
+    background: $primary-background;
+}
+
+#prompt-bar.visible {
+    display: block;
+}
+
+#command-list {
+    display: none;
+    height: 10;
+    border: none;
+    background: $panel;
+}
+
+#command-list.visible {
+    display: block;
+}
