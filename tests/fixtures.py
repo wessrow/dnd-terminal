@@ -117,15 +117,24 @@ def class_spell(name: str, level: int, school: str = "Evocation", description: s
 
 
 def granted_spell(name: str, level: int, school: str = "Illusion", description: str = "",
-                   limited_use: dict | None = None, uses_spell_slot: bool = False) -> dict:
-    """A feat/race-granted spell entry (data['spells']['feat'/'race'])."""
+                   limited_use: dict | None = None, uses_spell_slot: bool = False, component_id: int = 1) -> dict:
+    """A feat/race/class-feature-granted spell entry (data['spells']['feat'/'race'/'class']).
+    component_id identifies which feature granted it - D&D Beyond repeats the same
+    componentId across a grant's multiple casting-mode entries (dedupe key), but
+    two independent features granting a same-named spell get different ids."""
     entry = {
         "definition": {"name": name, "level": level, "school": school, "description": description},
         "usesSpellSlot": uses_spell_slot,
+        "componentId": component_id,
     }
     if limited_use:
         entry["limitedUse"] = limited_use
     return entry
+
+
+def sense_modifier(name: str, range_ft: int) -> dict:
+    """A special sense (Darkvision, Blindsight, etc.) - a `type: "set-base"` modifier."""
+    return {"type": "set-base", "subType": name, "friendlySubtypeName": name.title(), "value": range_ft}
 
 
 # -- Concrete fixtures --------------------------------------------------- #

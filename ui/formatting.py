@@ -28,14 +28,21 @@ def proficiency_marker(proficient: bool, expertise: bool) -> Text:
 def spell_notes(spell: dict, charge: tuple[int, int] | None) -> str:
     """Live "X/Y left (Long Rest)"-style notes for a spell - computed from current
     tracker state rather than a static string, so it doesn't go stale the moment
-    the spell is actually used."""
-    parts = []
-    if charge:
-        used, available = charge
-        parts.append(f"{available - used}/{available} left ({spell['reset_type']})")
+    the spell is actually used.
+
+    "or slot" only makes sense as a fallback *alongside* a free charge (e.g.
+    Invisibility: "0/1 left (Long Rest), or slot") - a spell that is ONLY ever
+    cast with a slot (a Fiend patron's Fireball, or any regular Class spell)
+    gets no note at all, same as a normal Class spell, rather than a lone
+    dangling "or slot" with nothing for the "or" to refer to.
+    """
+    if not charge:
+        return ""
+    used, available = charge
+    note = f"{available - used}/{available} left ({spell['reset_type']})"
     if spell["slot_cast"]:
-        parts.append("or slot")
-    return ", ".join(parts)
+        note += ", or slot"
+    return note
 
 
 def spell_name_cell(name: str, usable: bool) -> Text:

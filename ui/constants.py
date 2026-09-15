@@ -11,8 +11,10 @@ TAB_LABELS = {
     "tab-conditions": "Conditions",
 }
 
-# Tabs whose primary table should grab focus when you switch to them.
+# Every tab's primary table should grab focus when you switch to them, Skills
+# included - a table that never gets focus can't be scrolled with the keyboard.
 TAB_PRIMARY_WIDGET = {
+    "tab-skills": "#skills",
     "tab-spells": "#spells",
     "tab-resources": "#resources",
     "tab-inventory": "#inventory",

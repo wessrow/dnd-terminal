@@ -210,3 +210,36 @@ def test_inspiration_mirrors_ddb_value_until_toggled():
     assert t.effective_inspiration() is True
     t.toggle_inspiration()
     assert t.effective_inspiration() is False
+
+
+# -- reset_to_baseline: the "undo everything local" escape hatch --------- #
+
+def test_reset_to_baseline_clears_every_local_override():
+    t = tracker(barbarian_character())
+    t.apply_damage(10)
+    t.apply_temp_hp(5)
+    t.use_resource("Rage")
+    t.toggle_inspiration()
+    t.state["active_conditions"] = ["poisoned"]
+
+    t.reset_to_baseline()
+
+    assert t.state == {
+        "active_conditions": [],
+        "current_hp": None,
+        "temp_hp": None,
+        "pact_magic_used": None,
+        "spell_slots_used": {},
+        "inspiration_override": None,
+        "resources_used": {},
+        "spell_uses": {},
+    }
+
+
+def test_reset_to_baseline_falls_back_to_live_ddb_values():
+    data = barbarian_character()
+    t = tracker(data)
+    t.apply_damage(10)
+    t.reset_to_baseline()
+    current, max_hp, _ = t.effective_hp()
+    assert current == max_hp  # back to whatever character_data itself says

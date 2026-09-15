@@ -112,7 +112,6 @@ class DndSheetApp(App):
             with TabbedContent(id="main-tabs"):
                 with TabPane(f"{icons.SKILLS} Skills", id="tab-skills"):
                     yield ReferenceTable(id="skills")
-                    yield Static(id="passive-stats", classes="muted")
                 with TabPane(f"{icons.SPELLS} Spells", id="tab-spells"):
                     yield VimDataTable(id="spells")
                     yield Static(id="spell-detail", classes="detail")
@@ -360,10 +359,16 @@ class DndSheetApp(App):
         self.title = data["name"]
         level = sheet.total_level(data)
         languages = ", ".join(sheet.languages(data)) or "-"
+        classes = data["classes"]
+        if len(classes) == 1:
+            # single-class: fold the class name into the level line instead of a
+            # separate "Warlock 5" line that just repeats the level shown above it
+            class_line = f"Level {level} {data['race']['fullName']} {classes[0]['definition']['name']}"
+        else:
+            class_line = f"Level {level} {data['race']['fullName']}\n{sheet.class_summary(data)}"
         self.query_one("#identity", Static).update(
             f"[bold]{data['name']}[/bold]\n"
-            f"Level {level} {data['race']['fullName']}\n"
-            f"{sheet.class_summary(data)}\n"
+            f"{class_line}\n"
             f"Background: {data['background']['definition']['name']}\n"
             f"Alignment: {sheet.alignment_name(data)}\n"
             f"Languages: {languages}"
@@ -397,8 +402,6 @@ class DndSheetApp(App):
                 sheet.format_modifier(skill["modifier"]),
                 formatting.proficiency_marker(skill["proficient"], skill["expertise"]),
             )
-        self.query_one("#passive-stats", Static).update(f"{icons.EYE} Passive Perception: {sheet.passive_perception(data)}")
-
         self.spells_by_key.clear()
         for i, spell in enumerate(sheet.known_spells(data)):
             self.spells_by_key[str(i)] = spell
@@ -538,6 +541,20 @@ class DndSheetApp(App):
         else:
             self.notify("Nothing to restore on a short rest for this character.")
 
+    def reset_to_ddb_baseline(self) -> None:
+        """The "undo everything I've tracked locally this session" button - wipes
+        HP/spell-slot/resource/condition overrides so every value falls back to
+        whatever D&D Beyond's own data says. Does not touch D&D Beyond itself."""
+        if not self.combat:
+            return
+        self.combat.reset_to_baseline()
+        state_store.save(self.character_id, self.state)
+        self.render_combat_panel()
+        self.render_resources()
+        self.render_spells()
+        self.render_conditions()
+        self.notify(f"{icons.DANGER} Reset - all local tracking cleared, back to D&D Beyond's own data", severity="warning")
+
     # ------------------------------------------------------------------ #
     # Rendering
     # ------------------------------------------------------------------ #
@@ -548,39 +565,65 @@ class DndSheetApp(App):
         data = self.character_data
         current_hp, max_hp, temp_hp = self.combat.effective_hp()
 
+        hp_line = f"{icons.HEART} HP: {current_hp}/{max_hp}" + (f" (+{temp_hp} temp)" if temp_hp else "")
+        self.query_one("#hp-line", Static).update(hp_line)
+        self.query_one("#hp-bar", ProgressBar).update(total=max_hp, progress=max(current_hp, 0))
+
+        sections = []
+
         death_saves = data["deathSaves"]
-        death_save_line = ""
         if current_hp <= 0:
-            death_save_line = (
-                f"\nDeath Saves: {death_saves['successCount']} succ / {death_saves['failCount']} fail"
+            sections.append(
+                f"{icons.DEATH} Death Saves: {death_saves['successCount']} succ / {death_saves['failCount']} fail"
             )
 
-        hp_line = f"{icons.HEART} HP: {current_hp}/{max_hp}" + (f" (+{temp_hp} temp)" if temp_hp else "")
-        self.query_one("#hp-line", Static).update(f"{hp_line}{death_save_line}")
-        self.query_one("#hp-bar", ProgressBar).update(total=max_hp, progress=max(current_hp, 0))
+        # Every line here gets a leading icon and pairs up related stats on one
+        # row, rather than a long list of single unrelated icon+label lines.
+        sections.append(
+            f"{icons.SHIELD} AC {sheet.armor_class(data)}"
+            f"   {icons.PROFICIENCY} Prof {sheet.format_modifier(sheet.proficiency_bonus(data))}\n"
+            f"{icons.INITIATIVE} Init {sheet.format_modifier(sheet.initiative(data))}"
+            f"   {icons.SPEED} Speed {sheet.speed(data)} ft"
+        )
+
+        sense_lines = [
+            f"{icons.EYE} Passive Perception {sheet.passive_skill(data, 'Perception')}",
+            f"{icons.EYE} Passive Investigation {sheet.passive_skill(data, 'Investigation')}",
+            f"{icons.EYE} Passive Insight {sheet.passive_skill(data, 'Insight')}",
+        ]
+        sense_lines.extend(f"{icons.EYE} {s['name']} {s['range']} ft" for s in sheet.senses(data))
+        sections.append("\n".join(sense_lines))
 
         active_conditions = [
             self.conditions_by_slug[slug]["name"]
             for slug in self.state["active_conditions"]
             if slug in self.conditions_by_slug
         ]
-        if active_conditions:
-            conditions_line = f"[bold red]{', '.join(active_conditions)}[/bold red]"
-        else:
-            conditions_line = "None"
-
+        conditions_line = f"[bold red]{', '.join(active_conditions)}[/bold red]" if active_conditions else "None"
         inspiration = self.combat.effective_inspiration()
-
-        self.query_one("#combat-rest", Static).update(
-            f"{icons.SHIELD} AC: {sheet.armor_class(data)}\n"
-            f"Proficiency Bonus: {sheet.format_modifier(sheet.proficiency_bonus(data))}\n"
-            f"Initiative: {sheet.format_modifier(sheet.initiative(data))}\n"
-            f"Speed: {sheet.speed(data)} ft\n"
-            f"{icons.INSPIRATION} Heroic Inspiration: {'Yes' if inspiration else 'No'}\n"
-            f"{icons.CONDITIONS} Conditions: {conditions_line}\n\n"
-            f"{self._spellcasting_summary()}\n\n"
-            f"{icons.GOLD} Currency: {sheet.currency_summary(data)}"
+        sections.append(
+            f"{icons.INSPIRATION} Inspiration: {'Yes' if inspiration else 'No'}\n"
+            f"{icons.CONDITIONS} Conditions: {conditions_line}"
         )
+
+        sections.append(self._spellcasting_summary())
+        sections.append(f"{icons.GOLD} {sheet.currency_summary(data)}")
+
+        self.query_one("#combat-rest", Static).update("\n\n".join(sections))
+
+    def render_conditions(self) -> None:
+        """Refreshes every row's active styling from self.state - unlike the
+        row-selected toggle handler, this is for bulk changes (e.g. resetting to
+        baseline) where there's no single row/cursor to preserve."""
+        table = self.query_one("#conditions", DataTable)
+        for slug, condition in self.conditions_by_slug.items():
+            is_active = slug in self.state["active_conditions"]
+            table.update_cell(
+                slug, self._condition_name_col, formatting.condition_name_cell(condition["name"], is_active),
+                update_width=True,
+            )
+            table.update_cell(slug, self._condition_active_col, formatting.active_marker(is_active), update_width=True)
+        self.render_active_effects()
 
     def render_active_effects(self) -> None:
         panel = self.query_one("#active-effects", Static)

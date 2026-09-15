@@ -49,6 +49,9 @@ def list_commands(app) -> list[tuple[str, callable]]:
         commands.append((f"Go to {TAB_LABELS[tab_id]} tab", lambda t=tab_id: app.goto_tab(t)))
     for theme_name in app.available_themes:
         commands.append((f"{icons.THEME}  Theme: {theme_name}", lambda t=theme_name: setattr(app, "theme", t)))
+    commands.append(
+        (f"{icons.DANGER}  DANGER: reset ALL local tracking to D&D Beyond", app.reset_to_ddb_baseline)
+    )
     return commands
 
 

@@ -120,12 +120,14 @@ class CombatTracker:
         self.state["spell_slots_used"][str(level)] = max(0, used - 1)
 
     def effective_spell_charge(self, spell: dict) -> tuple[int, int] | None:
-        """(used, available) for a feat/race-granted spell's own free-cast-per-rest
-        allowance (e.g. Magic Initiate's 1/long rest), or None if this spell doesn't
-        have one (a Class spell, or an at-will cantrip)."""
+        """(used, available) for a feat/race/feature-granted spell's own
+        free-cast-per-rest allowance (e.g. Magic Initiate's 1/long rest), or None
+        if this spell doesn't have one (a Class spell, or an at-will cantrip).
+        Tracked by `charge_key`, not `name` - two different features can grant a
+        same-named spell as two independent charges (see sheet.known_spells)."""
         if not spell["free_cast"] or not spell["max_uses"]:
             return None
-        used = self.state["spell_uses"].get(spell["name"], spell["used_baseline"])
+        used = self.state["spell_uses"].get(spell["charge_key"], spell["used_baseline"])
         return min(used, spell["max_uses"]), spell["max_uses"]
 
     def _use_a_slot(self, spell: dict) -> str | None:
@@ -172,7 +174,7 @@ class CombatTracker:
         if charge:
             used, available = charge
             if used < available:
-                self.state["spell_uses"][spell["name"]] = used + 1
+                self.state["spell_uses"][spell["charge_key"]] = used + 1
                 remaining = available - used - 1
                 return f"Cast {spell['name']} - {remaining}/{available} free use(s) left"
             if not spell["slot_cast"]:
@@ -225,7 +227,7 @@ class CombatTracker:
             self.state["resources_used"][res["name"]] = 0
         for spell in sheet.known_spells(self.character_data):
             if spell["free_cast"]:
-                self.state["spell_uses"][spell["name"]] = 0
+                self.state["spell_uses"][spell["charge_key"]] = 0
 
     def short_rest(self) -> bool:
         """Returns whether there was anything to restore."""
@@ -239,6 +241,22 @@ class CombatTracker:
                 restored = True
         for spell in sheet.known_spells(self.character_data):
             if spell["free_cast"] and spell["reset_type"] == "Short Rest":
-                self.state["spell_uses"][spell["name"]] = 0
+                self.state["spell_uses"][spell["charge_key"]] = 0
                 restored = True
         return restored
+
+    # -- Reset everything back to D&D Beyond's own data ------------------- #
+
+    def reset_to_baseline(self) -> None:
+        """Wipes every local override, so the next read of anything falls all the
+        way back to whatever D&D Beyond's own data says - the "undo everything
+        this session tracked locally" escape hatch. Deliberately does not touch
+        `character_data` itself (that's always D&D Beyond's, never local)."""
+        self.state["active_conditions"] = []
+        self.state["current_hp"] = None
+        self.state["temp_hp"] = None
+        self.state["pact_magic_used"] = None
+        self.state["spell_slots_used"] = {}
+        self.state["inspiration_override"] = None
+        self.state["resources_used"] = {}
+        self.state["spell_uses"] = {}

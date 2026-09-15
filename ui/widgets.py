@@ -56,12 +56,10 @@ class PromptBar(Input, can_focus=False):
         self.post_message(self.Navigate(direction))
 
 
-class ReferenceTable(DataTable, can_focus=False):
-    """A read-only reference table (Abilities/Saves/Skills): every row is already
-    fully visible and there's nothing to select, so it takes no input and isn't part
-    of the tab-focus cycle. It keeps a row cursor (not "none") purely so "/" search
-    has something visible to move when it jumps to a match."""
-
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("cursor_type", "row")
-        super().__init__(*args, **kwargs)
+class ReferenceTable(VimDataTable):
+    """A read-only reference table (Abilities/Saves/Skills): Enter/RowSelected does
+    nothing for these (no app.py handler acts on their table ids), but they must
+    stay focusable and hjkl-navigable like every other table - Skills in
+    particular can have more rows than fit on screen, and a table that can't take
+    focus can't be scrolled with the keyboard (bit us for real: "Go to Skills tab"
+    left focus on nothing, so hjkl/arrows had no table to scroll)."""

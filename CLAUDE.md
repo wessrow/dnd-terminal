@@ -103,18 +103,42 @@ project root regardless of which package `state_store.py` lives in - don't
   derived from them wrong too - one root cause, many wrong-looking symptoms).
 - **Languages** are the same story: `type: "language"` modifiers scattered the same
   way, named via `friendlySubtypeName`. See `sheet.languages`.
-- Feat/race-granted spells (Magic Initiate, Shadow Touched, etc.) live in
-  `spells.feat`/`spells.race`, **not** `classSpells`, and the same spell can appear
-  twice there (once per casting mode - free 1/long-rest vs. via a real slot).
-  Dedupe by name (`sheet.known_spells` does this). The free-cast side has its own
-  `limitedUse` block (same shape as class resources, above) - `known_spells`
-  carries `free_cast`/`max_uses`/`used_baseline`/`reset_type`/`slot_cast` as plain
-  data, and `CombatTracker.cast_spell` spends the free charge first, falling back
-  to a real slot only if `slot_cast` is also true (matching the actual 5e rule for
-  these feats). The Spells tab dims any spell `CombatTracker.can_cast` says is
-  currently uncastable (no charge left and no slot for its level either), and its
-  Notes column shows the live "X/Y left (Long Rest)" count instead of a static
-  "1/long rest" string that would go stale the moment it's used once.
+- **Feat/race/class-feature-granted spells live in THREE places, not one**:
+  `spells.feat`, `spells.race`, **and `spells.class`** - the last one is easy to
+  miss since `classSpells` (a completely different key) already sounds like "the
+  class's spells." `spells.class` is specifically subclass/invocation "always
+  prepared" grants - a Fiend patron Warlock's expanded list (Burning
+  Hands/Fireball/etc, `usesSpellSlot: true`, `alwaysPrepared: true`, no
+  `limitedUse`) or an invocation like Gift of the Depths (`limitedUse` present).
+  `sheet.known_spells` reads all three under a shared "granted" path, labeled
+  `source="Class Feature"` for the `spells.class` ones specifically (not
+  `source="Feature"` - too easy to misread as "Feat" at a glance in a table -
+  and not `source="Class"`, which means "the player picked this from their
+  class's own spell list," a different concept entirely).
+- The same spell can appear twice in one of these lists (once per casting mode -
+  free 1/long-rest vs. via a real slot) - **or a same-named spell can be granted
+  independently by two different features**, which must NOT be merged into one
+  (that would silently lose one of the two independent charges). `known_spells`
+  dedupes by `(name, componentId)`, not name alone, and gives each resulting
+  entry a `charge_key` (`f"{source}:{componentId}:{name}"`) - `combat.py` tracks
+  usage by `charge_key`, never by `name`, for exactly this reason.
+- The free-cast side has its own `limitedUse` block (same shape as class
+  resources, above) - `known_spells` carries `free_cast`/`max_uses`/
+  `used_baseline`/`reset_type`/`slot_cast`/`charge_key` as plain data, and
+  `CombatTracker.cast_spell` spends the free charge first, falling back to a
+  real slot only if `slot_cast` is also true (matching the actual 5e rule for
+  these feats/features). The Spells tab dims any spell `CombatTracker.can_cast`
+  says is currently uncastable (no charge left and no slot for its level
+  either), and its Notes column shows the live "X/Y left (Long Rest)" count
+  instead of a static "1/long rest" string that would go stale the moment it's
+  used once.
+- **Special senses** (Darkvision, Blindsight, Tremorsense, Truesight) are a
+  `type: "set-base"` modifier with `subType` matching the sense's name, same
+  scattered pattern as everything else - `sheet.senses`. **Passive skill scores**
+  (Perception, Investigation, Insight, or any other skill) are just `10 +` that
+  skill's own modifier - `sheet.passive_skill(data, skill_name)` is generic, not
+  Perception-specific; `passive_perception` is a thin wrapper kept for
+  convenience.
 - **Limited-use class/race/feat resources (Rage, Bardic Inspiration, Channel
   Divinity, Ki, Second Wind, Relentless Endurance, etc.) are all named actions in
   `data['actions'].{class,race,feat}`, each with its own `limitedUse: {maxUses,
@@ -141,6 +165,7 @@ generically, never adding a name-check or an external ruleset dataset:
 | "Barbarian has Rage" | any class/race/feat action in `data['actions']` with a `limitedUse` block | `sheet.class_resources` |
 | "Magic Initiate spells are 1/long rest" | the spell's own `limitedUse` block in `spells.feat`/`spells.race` | `sheet.known_spells` |
 | "Half-Orc gets +2 STR" | any `type: "bonus"` modifier with `subType: "<ability>-score"` | `sheet.ability_scores` |
+| "This Warlock has a custom +6 AC item" | any character can attach a custom bonus via D&D Beyond's "Customize" panel, stored in `data['characterValues']` (opaque `typeId`, not class/race/feat-scoped at all) | `sheet.custom_adjustments` |
 
 **The rule going forward**: before adding any check that names a specific class,
 race, or feat, first look for the generic field the character JSON already uses
@@ -151,6 +176,30 @@ is the only source that knows a specific character's current state, and a static
 dataset can't provide that regardless. If a real one-off case turns up that
 truly has no generic signal, hardcode it as a last resort and say so loudly in a
 comment - don't reach for it first.
+
+**Custom stat overrides (`characterValues`)**: D&D Beyond lets a player attach a
+custom bonus to almost any stat via a "Customize" panel in the web UI (e.g. a
+homebrew magic item granting +6 AC, unrelated to any equipped item's own
+`armorClass` field). These land in their own top-level array,
+`data['characterValues']`, as `{typeId, value, notes}` entries - completely
+separate from `modifiers`/`bonusStats`/inventory. `typeId` is an opaque,
+undocumented D&D Beyond protocol number (confirmed by inspecting a real
+account's JSON, not from any official docs); only `2` (armor class) has been
+confirmed so far, mapped in `sheet.CUSTOM_VALUE_TYPE_IDS` and applied in
+`sheet.armor_class`. The user's own D&D Beyond account mentioned other stats
+accept custom values too (HP, initiative, etc. presumably each with their own
+typeId) - if one of those turns up as a discrepancy between this app and D&D
+Beyond's displayed value, check `characterValues` for an unrecognized `typeId`
+before assuming a different bug, and extend the map once confirmed.
+
+**Not everything that looks like a fixed list is the forbidden kind.**
+`sheet.SENSE_NAMES = {"darkvision", "blindsight", "tremorsense", "truesight"}` and
+`RESET_TYPES = {1: "Short Rest", 2: "Long Rest"}` are hardcoded lists too - but
+they're fixed 5e *game vocabulary* (there are only ever these senses, only ever
+these two reset triggers), not a per-class/feat exception. The distinction: would
+adding a new class/race/feat to D&D Beyond ever require touching this list? If
+no, it's vocabulary and fine to hardcode. If yes (a new class name, a new feature
+name), find the generic field instead.
 
 ## Why combat tracking is local-only
 
@@ -186,16 +235,26 @@ duplicate bindings for the same action (e.g. there's no `ctrl+p` alongside `:`).
 - `[` / `]` - previous/next tab (auto-focuses that tab's table)
 - `/` - search the active tab's table (typed inline at the bottom, vim-style -
   see PromptBar below), jumps to first match
-- `+` / `-` - heal/damage 1 HP (quick single-point adjustments)
 - `r` - refresh character data from D&D Beyond
-- `:` - command palette (rest, damage/heal/temp-HP prompts, spell slots, toggle
-  inspiration, switch character, jump to tab)
+- `:` - command palette (rest, damage/heal/temp-HP prompts, spell slots, class
+  resources, toggle inspiration, switch character, jump to tab, change theme,
+  and the DANGER reset-to-baseline command)
 - `q` - quit
 
-Only tables you actually act on (Spells, Inventory, Conditions) are part of the tab
-focus chain (`Widget(can_focus=False)` via `ui.widgets.ReferenceTable` for the
-rest) - Abilities/Saves/Skills are always-visible reference data with nothing to
-select, but are still searchable with `/`.
+There's deliberately no dedicated key for damage/heal (there used to be `+`/`-`
+for ±1 HP - removed since typing an exact amount into the command palette,
+`:damage 8`, covers it better and there's no need for two ways to do the same
+thing).
+
+Every table is focusable and hjkl-navigable, including the read-only reference
+ones (Abilities/Saves/Skills, via `ui.widgets.ReferenceTable`) - Enter/RowSelected
+is simply a no-op for those table ids in `app.py`. They used to be
+`can_focus=False` on the theory that "nothing to select" meant "no need to focus,"
+but that also meant nothing could scroll them with the keyboard once content
+overflowed the visible area (Skills' 18 rows on a short terminal, for one) - and
+"Go to Skills tab" from the command palette left focus on nothing at all, since it
+had no widget to hand focus to. All tables, reference or interactive, are
+searchable with `/`.
 
 **PromptBar** (`ui/widgets.py`) is why search/damage/heal/temp-HP/the command
 palette don't cover the screen like modal versions would: instead of pushing a

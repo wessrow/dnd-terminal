@@ -48,10 +48,6 @@ DataTable {
     margin-top: 1;
 }
 
-.muted {
-    color: $text-muted;
-}
-
 /* #palette wraps #command-list + #prompt-bar as the ONE widget docked to the
    bottom (alongside Footer) - Textual's compositor mis-clips scrolled content in
    a docked OptionList when there are 3+ widgets docked to the same edge, so

@@ -65,6 +65,28 @@ async def test_barbarian_has_no_spells_but_has_a_rage_resource(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_going_to_skills_tab_focuses_it_so_it_can_be_scrolled(monkeypatch, tmp_path):
+    """Regression guard: Skills used to have no entry in TAB_PRIMARY_WIDGET (its
+    table was can_focus=False, "nothing to select"), so switching to it from the
+    command palette left focus on nothing - and a non-focusable table can't be
+    scrolled with the keyboard even when its rows overflow the screen."""
+    app = _make_app(monkeypatch, tmp_path, wizard_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        app.goto_tab("tab-spells")
+        await pilot.pause()
+        app.goto_tab("tab-skills")
+        await pilot.pause()
+
+        skills = app.query_one("#skills", DataTable)
+        assert app.focused is skills
+        assert skills.can_focus
+
+
+@pytest.mark.asyncio
 async def test_multiclass_shows_both_pact_magic_and_regular_slots(monkeypatch, tmp_path):
     app = _make_app(monkeypatch, tmp_path, multiclass_warlock_sorcerer_character())
     async with app.run_test(size=(170, 50)) as pilot:
@@ -75,6 +97,51 @@ async def test_multiclass_shows_both_pact_magic_and_regular_slots(monkeypatch, t
         combat_text = str(app.query_one("#combat-rest").render())
         assert "Pact Magic" in combat_text
         assert "Level 1" in combat_text
+
+
+@pytest.mark.asyncio
+async def test_single_class_identity_does_not_repeat_the_level_line(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, wizard_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        identity_text = str(app.query_one("#identity").render())
+        assert "Level 5 Human Wizard" in identity_text
+        assert identity_text.count("Level 5") == 1
+
+
+@pytest.mark.asyncio
+async def test_multiclass_identity_shows_the_class_breakdown_separately(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, multiclass_warlock_sorcerer_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        identity_text = str(app.query_one("#identity").render())
+        assert "Level 5 Human" in identity_text
+        assert "Warlock 3" in identity_text and "Sorcerer 2" in identity_text
+
+
+@pytest.mark.asyncio
+async def test_reset_command_clears_local_tracking_end_to_end(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, barbarian_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        app.apply_damage(10)
+        app.use_resource("Rage")
+        assert app.combat.effective_hp()[0] < app.combat.effective_hp()[1]
+
+        app.reset_to_ddb_baseline()
+        await pilot.pause()
+
+        current, max_hp, _ = app.combat.effective_hp()
+        assert current == max_hp
+        resources = app.query_one("#resources", DataTable)
+        assert resources.get_row_at(0)[1] == "3/3"
 
 
 @pytest.mark.asyncio

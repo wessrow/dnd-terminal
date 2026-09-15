@@ -8,10 +8,12 @@ from .fixtures import (
     barbarian_character,
     base_character,
     class_entry,
+    class_spell,
     fighter_character,
     granted_spell,
     limited_use_action,
     multiclass_warlock_sorcerer_character,
+    sense_modifier,
     wizard_character,
 )
 
@@ -45,6 +47,27 @@ def test_hit_points_adds_con_modifier_per_level_for_any_class():
     assert max_hp == 44 + 3 * 5
     assert current == max_hp
     assert temp == 0
+
+
+# -- armor_class: custom "Add a bonus" overrides from characterValues ----- #
+
+def test_armor_class_includes_a_custom_bonus_from_character_values():
+    data = base_character(characterValues=[
+        {"typeId": 2, "value": 6, "notes": "Homebrew magic item"},
+    ])
+    assert sheet.armor_class(data) == 16  # 10 unarmored + 0 DEX mod + 6 custom
+
+
+def test_armor_class_ignores_unrelated_or_non_numeric_character_values():
+    data = base_character(characterValues=[
+        {"typeId": 16, "value": True, "notes": None},
+        {"typeId": 9, "value": "Plus Charisma roll from Agonizing Blast", "notes": None},
+    ])
+    assert sheet.armor_class(data) == 10
+
+
+def test_armor_class_with_no_character_values_key_at_all():
+    assert sheet.armor_class(base_character()) == 10
 
 
 # -- Pact Magic detection: by feature name, not by class name ------------- #
@@ -189,3 +212,66 @@ def test_known_spells_dedupes_a_spell_listed_twice_for_two_casting_modes():
     assert len(spells) == 1
     assert spells[0]["free_cast"] is True
     assert spells[0]["slot_cast"] is True
+
+
+def test_known_spells_keeps_two_independent_grants_of_a_same_named_spell_separate():
+    """A same-named spell granted by two *different* features (different
+    componentId) must not be merged into one - each has its own charge."""
+    data = base_character(
+        spells={
+            "feat": [
+                granted_spell("Invisibility", 2, component_id=1,
+                               limited_use={"maxUses": 1, "numberUsed": 0, "resetType": 2}),
+                granted_spell("Invisibility", 2, component_id=2,
+                               limited_use={"maxUses": 1, "numberUsed": 0, "resetType": 2}),
+            ],
+            "race": [], "background": [], "class": [], "item": [],
+        },
+    )
+    spells = sheet.known_spells(data)
+    assert len(spells) == 2
+    assert spells[0]["charge_key"] != spells[1]["charge_key"]
+
+
+def test_known_spells_includes_subclass_expanded_spell_list():
+    """Patron/subclass "always prepared" spells (e.g. a Fiend Warlock's expanded
+    spell list) live in spells['class'], not classSpells - a totally different
+    key than the player's own chosen spells, easy to miss."""
+    data = base_character(
+        spells={"class": [granted_spell("Fireball", 3, "Evocation", uses_spell_slot=True)],
+                "feat": [], "race": [], "background": [], "item": []},
+    )
+    spells = sheet.known_spells(data)
+    assert len(spells) == 1
+    assert spells[0]["name"] == "Fireball"
+    assert spells[0]["source"] == "Class Feature"
+    assert spells[0]["slot_cast"] is True
+
+
+def test_known_spells_does_not_confuse_feature_grants_with_chosen_class_spells():
+    data = base_character(
+        classSpells=[{"characterClassId": 1, "spells": [class_spell("Mage Armor", 1)]}],
+        spells={"class": [granted_spell("Fireball", 3, uses_spell_slot=True)],
+                "feat": [], "race": [], "background": [], "item": []},
+    )
+    by_source = {s["name"]: s["source"] for s in sheet.known_spells(data)}
+    assert by_source == {"Mage Armor": "Class", "Fireball": "Class Feature"}
+
+
+# -- senses / passive scores: generic modifiers, not race-specific -------- #
+
+def test_senses_reads_darkvision_from_any_source():
+    data = base_character(modifiers={"race": [sense_modifier("darkvision", 60)],
+                                      "class": [], "background": [], "feat": [], "item": [], "condition": []})
+    senses = sheet.senses(data)
+    assert senses == [{"name": "Darkvision", "range": 60}]
+
+
+def test_senses_empty_when_none_granted():
+    assert sheet.senses(base_character()) == []
+
+
+def test_passive_skill_works_for_any_skill_not_just_perception():
+    data = wizard_character()
+    investigation_mod = next(s["modifier"] for s in sheet.skills(data) if s["name"] == "Investigation")
+    assert sheet.passive_skill(data, "Investigation") == 10 + investigation_mod

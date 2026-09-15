@@ -113,6 +113,33 @@ def hit_points(data: dict) -> tuple[int, int, int]:
     return current, max_hp, temp
 
 
+# D&D Beyond's per-stat "Customize" panel (right-click a stat -> "Add a bonus")
+# writes flat bonuses into their own array, `characterValues`, keyed by an
+# opaque numeric typeId that isn't documented or derivable from the JSON
+# itself. This is fixed D&D Beyond protocol vocabulary though (like
+# RESET_TYPES), not a per-class/race/feat hardcode - a custom item/bonus works
+# identically no matter which class/race/feat the character has. The map only
+# grows as more typeIds get confirmed against real data; 2 (armor class) is
+# the only one seen so far.
+CUSTOM_VALUE_TYPE_IDS = {2: "armor-class"}
+
+
+def custom_adjustments(data: dict) -> dict[str, int]:
+    """Flat numeric bonuses from D&D Beyond's "Customize" -> "Add a bonus" UI,
+    e.g. a homebrew magic item granting +6 AC. These sit outside every other
+    modifier list, so functions like armor_class() would silently miss them
+    without reading `characterValues` too."""
+    totals: dict[str, int] = {}
+    for entry in data.get("characterValues") or []:
+        stat = CUSTOM_VALUE_TYPE_IDS.get(entry.get("typeId"))
+        if stat is None:
+            continue
+        value = entry.get("value")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            totals[stat] = totals.get(stat, 0) + int(value)
+    return totals
+
+
 def armor_class(data: dict) -> int:
     """Computes AC from equipped armor/shield plus Dex, the way D&D Beyond's client does.
 
@@ -153,7 +180,9 @@ def armor_class(data: dict) -> int:
         if m.get("type") == "bonus" and m.get("subType") == "armor-class"
     )
 
-    return base_ac + shield_bonus + flat_bonus
+    custom_bonus = custom_adjustments(data).get("armor-class", 0)
+
+    return base_ac + shield_bonus + flat_bonus + custom_bonus
 
 
 def class_summary(data: dict) -> str:
@@ -226,9 +255,32 @@ def skills(data: dict) -> list[dict]:
     return results
 
 
+def passive_skill(data: dict, skill_name: str) -> int:
+    """10 + a skill's modifier - the standard 5e "passive" formula, usable for any
+    skill (Perception, Investigation, Insight are the commonly-shown ones, but
+    nothing here is specific to which)."""
+    skill = next(s for s in skills(data) if s["name"] == skill_name)
+    return 10 + skill["modifier"]
+
+
 def passive_perception(data: dict) -> int:
-    perception = next(s for s in skills(data) if s["name"] == "Perception")
-    return 10 + perception["modifier"]
+    return passive_skill(data, "Perception")
+
+
+SENSE_NAMES = {"darkvision", "blindsight", "tremorsense", "truesight"}
+
+
+def senses(data: dict) -> list[dict]:
+    """Special senses (Darkvision, Blindsight, Tremorsense, Truesight) - a
+    `type: "set-base"` modifier with subType matching a sense name, wherever it's
+    granted from (race, class, feat, item) - same scattered-modifiers pattern as
+    everything else, not tied to a specific race."""
+    result = []
+    for mod_list in data["modifiers"].values():
+        for m in (mod_list or []):
+            if m.get("type") == "set-base" and m.get("subType") in SENSE_NAMES and m.get("value"):
+                result.append({"name": m.get("friendlySubtypeName") or m["subType"].title(), "range": m["value"]})
+    return result
 
 
 def saving_throws(data: dict) -> list[dict]:
@@ -333,16 +385,28 @@ def format_spell_level(level: int) -> str:
 
 
 def known_spells(data: dict) -> list[dict]:
-    """Returns one dict per spell the character actually has access to: class spells
-    plus anything granted by feats/race (e.g. Magic Initiate, Shadow Touched). D&D
-    Beyond stores these in separate places, and feat/race grants can list the same
-    spell twice (once per casting mode - e.g. "free once per long rest" vs "using a
-    spell slot"), so those are deduped by name here.
+    """Returns one dict per spell the character actually has access to: class
+    spells the player chose, plus anything *granted* by a feat, race, or a class
+    feature - subclass "expanded spell list" spells (e.g. a Fiend patron
+    Warlock's Burning Hands/Fireball/etc, always prepared, cast with a normal
+    slot) and invocations/racial traits with their own free-cast-per-rest charge
+    (Magic Initiate, Shadow Touched, Gift of the Depths, ...) all live in
+    `data['spells'].{feat,race,class}` - NOT `classSpells`, which is only the
+    spells picked from the class's own list.
+
+    Granted spells are deduped by `(name, componentId)`, not just name: D&D
+    Beyond lists the *same* grant twice when a spell has two casting modes
+    ("free once per rest" vs "using a slot" - same componentId, merged into one
+    entry here), but two *different* features can independently grant a
+    same-named spell (rare, but real) - keying on componentId too keeps those as
+    separate entries with their own charge tracking instead of one clobbering
+    the other's limited-use data.
 
     Each dict is pure data (no display strings) so the UI layer can compute live
     "X/Y left" text and gray out unusable spells via combat.CombatTracker, rather
     than baking a static "1/long rest" string in here that goes stale the moment
-    it's used once.
+    it's used once. `charge_key` is what combat.py uses to track usage - not
+    `name`, since two differently-granted spells can share a name.
     """
     spells = []
     for group in data["classSpells"]:
@@ -360,16 +424,20 @@ def known_spells(data: dict) -> list[dict]:
                     "max_uses": None,
                     "used_baseline": 0,
                     "reset_type": None,
+                    "charge_key": f"class:{d['name']}",
                 }
             )
 
-    granted: dict[str, dict] = {}
-    for source, category in (("Feat", "feat"), ("Race", "race")):
+    granted: dict[tuple[str, int], dict] = {}
+    for source, category in (("Feat", "feat"), ("Race", "race"), ("Class Feature", "class")):
         for sp in data["spells"].get(category) or []:
             d = sp["definition"]
+            component_id = sp.get("componentId") or 0
+            key = (d["name"], component_id)
             entry = granted.setdefault(
-                d["name"],
+                key,
                 {
+                    "name": d["name"],
                     "level": d["level"],
                     "school": d.get("school", ""),
                     "source": source,
@@ -379,6 +447,7 @@ def known_spells(data: dict) -> list[dict]:
                     "max_uses": None,
                     "used_baseline": 0,
                     "reset_type": None,
+                    "charge_key": f"{source}:{component_id}:{d['name']}",
                 },
             )
             limited_use = sp.get("limitedUse")
@@ -390,9 +459,7 @@ def known_spells(data: dict) -> list[dict]:
             if sp.get("usesSpellSlot"):
                 entry["slot_cast"] = True
 
-    for name, info in granted.items():
-        spells.append({"name": name, **info})
-
+    spells.extend(granted.values())
     spells.sort(key=lambda s: (s["level"], s["name"]))
     return spells
 
