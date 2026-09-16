@@ -1,31 +1,20 @@
 import asyncio
 
-import requests
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import (
-    DataTable,
-    Footer,
-    Header,
-    Input,
-    OptionList,
-    ProgressBar,
-    Static,
-    TabbedContent,
-    TabPane,
-    Tabs,
-)
+from textual.widgets import DataTable, Footer, Header, Input, OptionList, ProgressBar, Static, TabbedContent, Tabs
 from textual.widgets.option_list import Option
 
-from clients import ddb_client, open5e_client
+from clients import ddb_client
 from domain import familiar, sheet
 from domain.combat import CombatTracker
 from storage import state_store
 from ui import formatting, icons
 from ui.commands import list_commands, match_commands
-from ui.constants import CONDITIONAL_TABS, SEARCHABLE_TABS, TAB_IDS, TAB_LABELS, TAB_PRIMARY_WIDGET
+from ui.constants import CONDITIONAL_TABS, SEARCHABLE_TABS, TAB_IDS, TAB_PRIMARY_WIDGET
 from ui.screens import CharacterSelectScreen
+from ui.tabs import AttacksTab, ConditionsTab, FamiliarTab, InventoryTab, ResourcesTab, SkillsTab, SpellsTab
 from ui.widgets import PromptBar, ReferenceTable, VimDataTable
 
 # Widgets whose .loading spinner should show while the character fetch is in flight.
@@ -48,6 +37,16 @@ MAX_NOTIFICATIONS = 5
 
 
 class DndSheetApp(App):
+    """Composes the layout out of ui/tabs/*'s per-tab widgets and wires
+    top-level events. Owns: the sidebar (identity/abilities/saves/combat
+    panel), the CombatTracker and everything that mutates it (damage/heal/
+    rest/spell-slot/resource/familiar actions - all cross-cutting, since a
+    single rest can touch HP, Resources, and Spells at once), the command
+    palette/PromptBar, and tab navigation. Each tab in ui/tabs/ owns its own
+    widgets' compose/populate/render and whatever event handling is purely
+    local to it - see ui/tabs/__init__.py.
+    """
+
     TITLE = "D&D Terminal"
     CSS_PATH = "ui/app.tcss"
     ENABLE_COMMAND_PALETTE = False  # replaced by our own nvim-style PromptBar palette
@@ -71,20 +70,9 @@ class DndSheetApp(App):
         self.character_data: dict | None = None
         self.state: dict = state_store.load(self.character_id) if self.character_id else state_store.default_state()
         self.combat: CombatTracker | None = None
-        self.conditions_by_slug: dict[str, dict] = {}
-        self.spells_by_key: dict[str, dict] = {}
-        self.items_by_key: dict[str, dict] = {}
-        self.attacks_by_key: dict[str, dict] = {}
-        self.resources_by_name: dict[str, dict] = {}
-        self.familiar_features_by_key: dict[str, dict] = {}
-        self.familiar_monster: dict | None = None  # domain.familiar.summarize_monster() of the summoned form
         self.familiar_forms_available: list[str] = []
         self.is_spellcaster: bool = True  # updated per-character in populate()
         self.has_familiar: bool = True  # updated per-character in populate()
-        self._condition_name_col = None
-        self._condition_active_col = None
-        self._spell_name_col = None
-        self._spell_notes_col = None
         self._prompt_mode: str | None = None
         self._command_matches: list[tuple[str, callable]] = []
 
@@ -118,29 +106,13 @@ class DndSheetApp(App):
                     yield ProgressBar(id="hp-bar", show_percentage=False, show_eta=False)
                     yield Static(id="combat-rest")
             with TabbedContent(id="main-tabs"):
-                with TabPane(f"{icons.SKILLS} Skills", id="tab-skills"):
-                    yield ReferenceTable(id="skills")
-                with TabPane(f"{icons.ATTACKS} Attacks", id="tab-attacks"):
-                    yield VimDataTable(id="attacks")
-                    yield Static(id="attack-detail", classes="detail")
-                with TabPane(f"{icons.SPELLS} Spells", id="tab-spells"):
-                    yield VimDataTable(id="spells")
-                    yield Static(id="spell-detail", classes="detail")
-                with TabPane(f"{icons.FAMILIAR} Familiar", id="tab-familiar"):
-                    yield Static(id="familiar-header")
-                    yield ProgressBar(id="familiar-hp-bar", show_percentage=False, show_eta=False)
-                    yield VimDataTable(id="familiar-features")
-                    yield Static(id="familiar-feature-detail", classes="detail")
-                with TabPane(f"{icons.RESOURCES} Resources", id="tab-resources"):
-                    yield VimDataTable(id="resources")
-                    yield Static(id="resource-detail", classes="detail")
-                with TabPane(f"{icons.INVENTORY} Inventory", id="tab-inventory"):
-                    yield VimDataTable(id="inventory")
-                    yield Static(id="item-detail", classes="detail")
-                with TabPane(f"{icons.CONDITIONS} Conditions", id="tab-conditions"):
-                    yield VimDataTable(id="conditions")
-                    yield Static(id="active-effects")
-                    yield Static(id="condition-detail", classes="detail")
+                yield SkillsTab()
+                yield AttacksTab()
+                yield SpellsTab()
+                yield FamiliarTab()
+                yield ResourcesTab()
+                yield InventoryTab()
+                yield ConditionsTab()
         command_list = OptionList(id="command-list")
         command_list.can_focus = False  # see PromptBar's docstring re: AUTO_FOCUS
         with Vertical(id="palette"):
@@ -161,15 +133,6 @@ class DndSheetApp(App):
 
         self.query_one("#abilities", DataTable).add_columns("Ability", "Score", "Mod")
         self.query_one("#saves", DataTable).add_columns("Save", "Mod", "")
-        self.query_one("#skills", DataTable).add_columns("Skill", "Ability", "Mod", "")
-        self.query_one("#attacks", DataTable).add_columns("Attack", "Type", "To Hit", "Damage", "Range", "Source")
-        spell_columns = self.query_one("#spells", DataTable).add_columns("Spell", "Level", "School", "Source", "Notes")
-        self._spell_name_col, _, _, _, self._spell_notes_col = spell_columns
-        self.query_one("#familiar-features", DataTable).add_columns("Feature", "Kind")
-        self.query_one("#resources", DataTable).add_columns("Resource", "Uses", "Reset")
-        self.query_one("#inventory", DataTable).add_columns("Item", "Qty", "Equipped", "Weight")
-        columns = self.query_one("#conditions", DataTable).add_columns("Condition", "Active")
-        self._condition_name_col, self._condition_active_col = columns
 
         if self.character_id is None:
             self.open_character_select()
@@ -192,7 +155,7 @@ class DndSheetApp(App):
 
     def start_loading(self) -> None:
         self.run_worker(self.load_character(), exclusive=True, group="character")
-        self.run_worker(self.load_conditions(), exclusive=True, group="conditions")
+        self.run_worker(self.query_one(ConditionsTab).load(), exclusive=True, group="conditions")
 
     async def load_character(self) -> None:
         for widget_id in LOADING_WIDGETS:
@@ -210,76 +173,9 @@ class DndSheetApp(App):
         self.populate(data)
         for widget_id in LOADING_WIDGETS:
             self.query_one(widget_id).loading = False
-        self.run_worker(self.load_familiar(), exclusive=True, group="familiar")
-
-    async def load_familiar(self) -> None:
-        """Fetches the currently-summoned familiar's SRD stat block from
-        Open5e, if any form is summoned - separate from load_character's own
-        fetch since it depends on local state (which form, if any) rather
-        than D&D Beyond data, and shouldn't block the rest of the sheet."""
-        table = self.query_one("#familiar-features", DataTable)
-        header = self.query_one("#familiar-header", Static)
-        self.familiar_monster = None
-        form = self.state.get("familiar_form")
-        if not form:
-            header.update("[dim]No familiar summoned. Use the command palette to summon one.[/dim]")
-            self.query_one("#familiar-hp-bar", ProgressBar).update(total=1, progress=0)
-            table.clear()
-            self.familiar_features_by_key.clear()
-            self.query_one("#familiar-feature-detail", Static).update("")
-            return
-
-        table.loading = True
-        try:
-            raw = await asyncio.to_thread(open5e_client.fetch_monster, form)
-        except requests.RequestException as exc:
-            table.loading = False
-            header.update(f"[bold red]Failed to load {form}'s stat block: {exc}[/bold red]")
-            return
-        table.loading = False
-
-        if raw is None:
-            header.update(
-                f"[bold]{form}[/bold]\n[dim]No SRD stat block available for this form "
-                "(likely a 2024-only monster not yet in the SRD dataset).[/dim]"
-            )
-            self.query_one("#familiar-hp-bar", ProgressBar).update(total=1, progress=0)
-            table.clear()
-            self.familiar_features_by_key.clear()
-            self.query_one("#familiar-feature-detail", Static).update("")
-            return
-
-        self.familiar_monster = familiar.summarize_monster(raw)
-        self.render_familiar()
-
-    async def load_conditions(self) -> None:
-        table = self.query_one("#conditions", DataTable)
-        detail = self.query_one("#condition-detail", Static)
-        table.loading = True
-        try:
-            conditions = await asyncio.to_thread(open5e_client.fetch_conditions)
-        except requests.RequestException as exc:
-            table.loading = False
-            detail.update(f"[bold red]Failed to load conditions from Open5e: {exc}[/bold red]")
-            return
-
-        conditions = sorted(conditions, key=lambda c: c["name"])
-        self.conditions_by_slug = {c["slug"]: c for c in conditions}
-        table.clear()
-        for condition in conditions:
-            is_active = condition["slug"] in self.state["active_conditions"]
-            table.add_row(
-                formatting.condition_name_cell(condition["name"], is_active),
-                formatting.active_marker(is_active),
-                key=condition["slug"],
-            )
-        table.loading = False
-
-        if conditions:
-            detail.update(conditions[0]["desc"])
-        self.render_active_effects()
-        if self.character_data:
-            self.render_combat_panel()
+        self.run_worker(
+            self.query_one(FamiliarTab).load(self.state.get("familiar_form")), exclusive=True, group="familiar"
+        )
 
     def action_refresh(self) -> None:
         if self.character_id is None:
@@ -456,66 +352,25 @@ class DndSheetApp(App):
 
         self.render_combat_panel()
 
-        skills_table = self.query_one("#skills", DataTable)
-        skills_table.clear()
-        for skill in sheet.skills(data):
-            skills_table.add_row(
-                skill["name"],
-                skill["ability"],
-                sheet.format_modifier(skill["modifier"]),
-                formatting.proficiency_marker(skill["proficient"], skill["expertise"]),
-            )
-        attacks_table = self.query_one("#attacks", DataTable)
-        attacks_table.clear()
-        self.attacks_by_key.clear()
-        for i, attack in enumerate(sheet.attacks(data)):
-            key = str(i)
-            self.attacks_by_key[key] = attack
-            attacks_table.add_row(
-                attack["name"],
-                attack["attack_type"],
-                formatting.attack_to_hit_cell(attack["to_hit"], attack["proficient"]),
-                f"{attack['damage']} {attack['damage_type']}".strip(),
-                attack["range"],
-                attack["source"],
-                key=key,
-            )
-        if self.attacks_by_key:
-            self.query_one("#attack-detail", Static).update(formatting.attack_detail(self.attacks_by_key["0"]))
-        else:
-            self.query_one("#attack-detail", Static).update("[dim]No weapon or feature attacks for this character.[/dim]")
-
-        self.spells_by_key.clear()
-        for i, spell in enumerate(sheet.known_spells(data)):
-            self.spells_by_key[str(i)] = spell
-        self.render_spells(rebuild=True)
+        self.query_one(SkillsTab).populate(data)
+        self.query_one(AttacksTab).populate(data)
+        self.query_one(SpellsTab).populate(data)
+        self.query_one(InventoryTab).populate(data)
 
         self.is_spellcaster = sheet.is_spellcaster(data)
         self.has_familiar = sheet.has_familiar(data)
         self.familiar_forms_available = sheet.familiar_forms(data)
         self._sync_conditional_tabs()
 
-        self.render_resources()
-
-        inventory = self.query_one("#inventory", DataTable)
-        inventory.clear()
-        self.items_by_key.clear()
-        for i, item in enumerate(sheet.inventory_items(data)):
-            key = str(i)
-            self.items_by_key[key] = item
-            inventory.add_row(
-                item["name"],
-                str(item["quantity"]),
-                "Yes" if item["equipped"] else "",
-                f"{item['weight']} lb",
-                key=key,
-            )
-        if self.items_by_key:
-            self.query_one("#item-detail", Static).update(formatting.item_detail(self.items_by_key["0"]))
+        self.query_one(ResourcesTab).refresh_data()
 
     # ------------------------------------------------------------------ #
     # Local combat-tracking overlay: thin wrappers around CombatTracker that
     # persist state and refresh the UI after each mutation (see domain/combat.py).
+    # These stay app-level (rather than living on whichever tab triggered them)
+    # because a single mutation often has to refresh several tabs plus the
+    # sidebar combat panel at once - e.g. a rest touches HP, Resources, AND
+    # Spells - which only app.py has a reference to all of.
     # ------------------------------------------------------------------ #
 
     def apply_damage(self, amount: int) -> None:
@@ -558,20 +413,20 @@ class DndSheetApp(App):
         self.combat.use_pact_slot()
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_spells()
+        self.query_one(SpellsTab).refresh_data()
 
     def restore_pact_slot(self) -> None:
         self.combat.restore_pact_slot()
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_spells()
+        self.query_one(SpellsTab).refresh_data()
 
     def use_resource(self, name: str) -> None:
         if not self.combat:
             return
         if self.combat.use_resource(name):
             state_store.save(self.character_id, self.state)
-            self.render_resources()
+            self.query_one(ResourcesTab).refresh_data()
             self.notify(f"{icons.RESOURCES} Used {name}")
         else:
             self.notify(f"No uses of {name} left!", severity="warning")
@@ -581,25 +436,25 @@ class DndSheetApp(App):
             return
         self.combat.restore_resource(name)
         state_store.save(self.character_id, self.state)
-        self.render_resources()
+        self.query_one(ResourcesTab).refresh_data()
 
     def use_spell_slot(self, level: int) -> None:
         self.combat.use_spell_slot(level)
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_spells()
+        self.query_one(SpellsTab).refresh_data()
 
     def restore_spell_slot(self, level: int) -> None:
         self.combat.restore_spell_slot(level)
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_spells()
+        self.query_one(SpellsTab).refresh_data()
 
     def cast_spell(self, spell: dict) -> None:
         message = self.combat.cast_spell(spell)
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_spells()
+        self.query_one(SpellsTab).refresh_data()
         if message.startswith("No "):
             self.notify(message, severity="warning")
         elif message.startswith("Cast "):
@@ -613,8 +468,8 @@ class DndSheetApp(App):
         self.combat.long_rest()
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_resources()
-        self.render_spells()
+        self.query_one(ResourcesTab).refresh_data()
+        self.query_one(SpellsTab).refresh_data()
         self.notify(f"{icons.LONG_REST} Long rest complete - HP, spell slots, and resources restored (tracked locally)")
 
     def do_short_rest(self) -> None:
@@ -623,8 +478,8 @@ class DndSheetApp(App):
         if self.combat.short_rest():
             state_store.save(self.character_id, self.state)
             self.render_combat_panel()
-            self.render_resources()
-            self.render_spells()
+            self.query_one(ResourcesTab).refresh_data()
+            self.query_one(SpellsTab).refresh_data()
             self.notify(f"{icons.SHORT_REST} Short rest complete - resources restored (tracked locally)")
         else:
             self.notify("Nothing to restore on a short rest for this character.")
@@ -638,13 +493,60 @@ class DndSheetApp(App):
         self.combat.reset_to_baseline()
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
-        self.render_resources()
-        self.render_spells()
-        self.render_conditions()
+        self.query_one(ResourcesTab).refresh_data()
+        self.query_one(SpellsTab).refresh_data()
+        self.query_one(ConditionsTab).refresh_data()
         self.notify(f"{icons.DANGER} Reset - all local tracking cleared, back to D&D Beyond's own data", severity="warning")
 
+    def summon_familiar(self, form: str) -> None:
+        familiar.FamiliarTracker(None, self.state).summon(form)
+        state_store.save(self.character_id, self.state)
+        self.notify(f"{icons.FAMILIAR} Summoned {form}")
+        self.run_worker(self.query_one(FamiliarTab).load(form), exclusive=True, group="familiar")
+
+    def dismiss_familiar(self) -> None:
+        form = self.state.get("familiar_form")
+        familiar.FamiliarTracker(None, self.state).dismiss()
+        state_store.save(self.character_id, self.state)
+        self.notify(f"{icons.FAMILIAR} Dismissed {form or 'familiar'}")
+        self.run_worker(self.query_one(FamiliarTab).load(None), exclusive=True, group="familiar")
+
+    def open_familiar_damage_input(self) -> None:
+        self.open_prompt("familiar-damage")
+
+    def open_familiar_heal_input(self) -> None:
+        self.open_prompt("familiar-heal")
+
+    def apply_familiar_damage(self, amount: int) -> None:
+        tab = self.query_one(FamiliarTab)
+        result = familiar.FamiliarTracker(tab.monster, self.state).apply_damage(amount)
+        if result is None:
+            self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
+            return
+        state_store.save(self.character_id, self.state)
+        tab.refresh_data()
+        current, max_hp = result
+        self.notify(f"{icons.DAMAGE} Familiar took {amount} damage - {current}/{max_hp} HP")
+
+    def apply_familiar_heal(self, amount: int) -> None:
+        tab = self.query_one(FamiliarTab)
+        tracker = familiar.FamiliarTracker(tab.monster, self.state)
+        effective = tracker.effective_hp()
+        if effective is None:
+            self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
+            return
+        current, max_hp = effective
+        if current >= max_hp:
+            self.notify(f"{icons.HEAL} Familiar HP Full ({max_hp}/{max_hp})")
+            return
+        current, max_hp = tracker.apply_heal(amount)
+        state_store.save(self.character_id, self.state)
+        tab.refresh_data()
+        self.notify(f"{icons.HEAL} Familiar healed {amount} - {current}/{max_hp} HP")
+
     # ------------------------------------------------------------------ #
-    # Rendering
+    # Sidebar rendering (identity/abilities/saves are populate()-only; the
+    # combat panel also changes on every HP/rest/condition/inspiration action)
     # ------------------------------------------------------------------ #
 
     def render_combat_panel(self) -> None:
@@ -682,10 +584,11 @@ class DndSheetApp(App):
         sense_lines.extend(f"{icons.EYE} {s['name']} {s['range']} ft" for s in sheet.senses(data))
         sections.append("\n".join(sense_lines))
 
+        conditions_by_slug = self.query_one(ConditionsTab).conditions_by_slug
         active_conditions = [
-            self.conditions_by_slug[slug]["name"]
+            conditions_by_slug[slug]["name"]
             for slug in self.state["active_conditions"]
-            if slug in self.conditions_by_slug
+            if slug in conditions_by_slug
         ]
         conditions_line = f"[bold red]{', '.join(active_conditions)}[/bold red]" if active_conditions else "None"
         inspiration = self.combat.effective_inspiration()
@@ -698,154 +601,6 @@ class DndSheetApp(App):
         sections.append(f"{icons.GOLD} {sheet.currency_summary(data)}")
 
         self.query_one("#combat-rest", Static).update("\n\n".join(sections))
-
-    def render_conditions(self) -> None:
-        """Refreshes every row's active styling from self.state - unlike the
-        row-selected toggle handler, this is for bulk changes (e.g. resetting to
-        baseline) where there's no single row/cursor to preserve."""
-        table = self.query_one("#conditions", DataTable)
-        for slug, condition in self.conditions_by_slug.items():
-            is_active = slug in self.state["active_conditions"]
-            table.update_cell(
-                slug, self._condition_name_col, formatting.condition_name_cell(condition["name"], is_active),
-                update_width=True,
-            )
-            table.update_cell(slug, self._condition_active_col, formatting.active_marker(is_active), update_width=True)
-        self.render_active_effects()
-
-    def render_active_effects(self) -> None:
-        panel = self.query_one("#active-effects", Static)
-        active = [
-            self.conditions_by_slug[slug]
-            for slug in self.state["active_conditions"]
-            if slug in self.conditions_by_slug
-        ]
-        if not active:
-            panel.update("[dim]No active conditions.[/dim]")
-            return
-        blocks = [f"[bold red]{c['name']}[/bold red]\n{c['desc']}" for c in active]
-        panel.update("\n\n".join(blocks))
-
-    def render_spells(self, rebuild: bool = False) -> None:
-        """Refreshes the Spells table's usability styling (dimmed name + live "X/Y
-        left" notes). `rebuild=True` also rebuilds the rows from scratch (initial
-        load); otherwise it updates cells in place so the cursor position survives
-        casting a spell."""
-        table = self.query_one("#spells", DataTable)
-        if rebuild:
-            table.clear()
-            for key, spell in self.spells_by_key.items():
-                charge = self.combat.effective_spell_charge(spell)
-                table.add_row(
-                    formatting.spell_name_cell(spell["name"], self.combat.can_cast(spell)),
-                    sheet.format_spell_level(spell["level"]),
-                    spell["school"],
-                    spell["source"],
-                    formatting.spell_notes(spell, charge),
-                    key=key,
-                )
-            if self.spells_by_key:
-                first_spell = next(iter(self.spells_by_key.values()))
-                charge = self.combat.effective_spell_charge(first_spell)
-                self.query_one("#spell-detail", Static).update(formatting.spell_detail(first_spell, charge))
-        else:
-            for key, spell in self.spells_by_key.items():
-                charge = self.combat.effective_spell_charge(spell)
-                table.update_cell(
-                    key, self._spell_name_col,
-                    formatting.spell_name_cell(spell["name"], self.combat.can_cast(spell)),
-                    update_width=True,
-                )
-                table.update_cell(key, self._spell_notes_col, formatting.spell_notes(spell, charge), update_width=True)
-
-    def render_resources(self) -> None:
-        table = self.query_one("#resources", DataTable)
-        table.clear()
-        self.resources_by_name.clear()
-        for res in self.combat.effective_resources():
-            self.resources_by_name[res["name"]] = res
-            table.add_row(
-                res["name"],
-                f"{res['available'] - res['used']}/{res['available']}",
-                res["reset_type"],
-                key=res["name"],
-            )
-        if self.resources_by_name:
-            first = next(iter(self.resources_by_name.values()))
-            self.query_one("#resource-detail", Static).update(formatting.resource_detail(first))
-        else:
-            self.query_one("#resource-detail", Static).update("[dim]No tracked resources for this character.[/dim]")
-
-    def render_familiar(self) -> None:
-        """Renders the currently-cached familiar_monster summary plus its
-        locally-tracked HP - called after load_familiar fetches a stat block,
-        and after any local HP change (damage/heal/summon/dismiss) so it never
-        needs to re-fetch Open5e just to reflect a HP change."""
-        monster = self.familiar_monster
-        header = self.query_one("#familiar-header", Static)
-        hp_bar = self.query_one("#familiar-hp-bar", ProgressBar)
-        if not monster:
-            return
-        current, max_hp = familiar.FamiliarTracker(monster, self.state).effective_hp()
-        header.update(formatting.familiar_header(monster, current, max_hp))
-        hp_bar.update(total=max_hp, progress=max(current, 0))
-
-        table = self.query_one("#familiar-features", DataTable)
-        table.clear()
-        self.familiar_features_by_key.clear()
-        for i, feature in enumerate(monster["features"]):
-            key = str(i)
-            self.familiar_features_by_key[key] = feature
-            table.add_row(feature["name"], feature["kind"], key=key)
-        if monster["features"]:
-            first = next(iter(self.familiar_features_by_key.values()))
-            self.query_one("#familiar-feature-detail", Static).update(formatting.familiar_feature_detail(first))
-        else:
-            self.query_one("#familiar-feature-detail", Static).update("")
-
-    def summon_familiar(self, form: str) -> None:
-        familiar.FamiliarTracker(None, self.state).summon(form)
-        state_store.save(self.character_id, self.state)
-        self.notify(f"{icons.FAMILIAR} Summoned {form}")
-        self.run_worker(self.load_familiar(), exclusive=True, group="familiar")
-
-    def dismiss_familiar(self) -> None:
-        form = self.state.get("familiar_form")
-        familiar.FamiliarTracker(None, self.state).dismiss()
-        state_store.save(self.character_id, self.state)
-        self.notify(f"{icons.FAMILIAR} Dismissed {form or 'familiar'}")
-        self.run_worker(self.load_familiar(), exclusive=True, group="familiar")
-
-    def open_familiar_damage_input(self) -> None:
-        self.open_prompt("familiar-damage")
-
-    def open_familiar_heal_input(self) -> None:
-        self.open_prompt("familiar-heal")
-
-    def apply_familiar_damage(self, amount: int) -> None:
-        result = familiar.FamiliarTracker(self.familiar_monster, self.state).apply_damage(amount)
-        if result is None:
-            self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
-            return
-        state_store.save(self.character_id, self.state)
-        self.render_familiar()
-        current, max_hp = result
-        self.notify(f"{icons.DAMAGE} Familiar took {amount} damage - {current}/{max_hp} HP")
-
-    def apply_familiar_heal(self, amount: int) -> None:
-        tracker = familiar.FamiliarTracker(self.familiar_monster, self.state)
-        effective = tracker.effective_hp()
-        if effective is None:
-            self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
-            return
-        current, max_hp = effective
-        if current >= max_hp:
-            self.notify(f"{icons.HEAL} Familiar HP Full ({max_hp}/{max_hp})")
-            return
-        current, max_hp = tracker.apply_heal(amount)
-        state_store.save(self.character_id, self.state)
-        self.render_familiar()
-        self.notify(f"{icons.HEAL} Familiar healed {amount} - {current}/{max_hp} HP")
 
     def _spellcasting_summary(self) -> str:
         lines = [f"{icons.SPELLS} Spellcasting:"]
@@ -877,13 +632,6 @@ class DndSheetApp(App):
 
     def _sync_conditional_tabs(self) -> None:
         tabs = self.query_one(TabbedContent)
-        # Move off any tab about to be hidden *before* hiding anything, using
-        # the freshly-updated self.* flags rather than relying on Tabs' own
-        # "move active off a tab I just hid" repair: that repair reads
-        # `active` reactively, and doesn't land until after this method
-        # returns, so hiding two tabs back-to-back in one tick (Spells +
-        # Familiar together, for a pure martial) leaves `active` pointing at
-        # whichever of the two got hidden second - confirmed by testing.
         for tab_id, attr in CONDITIONAL_TABS.items():
             if getattr(self, attr):
                 tabs.show_tab(tab_id)
@@ -899,7 +647,7 @@ class DndSheetApp(App):
         # refresh/message processing so this reliably sees (and can correct)
         # the real settled value instead of a stale one - confirmed by
         # testing that fixing this synchronously, before OR after the loop,
-        # does not work.
+        # does not work. See CLAUDE.md.
         self.call_after_refresh(self._fix_active_tab_if_hidden)
 
     def _fix_active_tab_if_hidden(self) -> None:
@@ -919,60 +667,6 @@ class DndSheetApp(App):
         visible = self._visible_tab_ids()
         idx = visible.index(tabs.active)
         self.goto_tab(visible[(idx - 1) % len(visible)])
-
-    # ------------------------------------------------------------------ #
-    # Table events
-    # ------------------------------------------------------------------ #
-
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        table_id = event.data_table.id
-        key = event.row_key.value
-        if table_id == "spells" and key in self.spells_by_key:
-            spell = self.spells_by_key[key]
-            charge = self.combat.effective_spell_charge(spell) if self.combat else None
-            self.query_one("#spell-detail", Static).update(formatting.spell_detail(spell, charge))
-        elif table_id == "inventory" and key in self.items_by_key:
-            self.query_one("#item-detail", Static).update(formatting.item_detail(self.items_by_key[key]))
-        elif table_id == "attacks" and key in self.attacks_by_key:
-            self.query_one("#attack-detail", Static).update(formatting.attack_detail(self.attacks_by_key[key]))
-        elif table_id == "familiar-features" and key in self.familiar_features_by_key:
-            self.query_one("#familiar-feature-detail", Static).update(
-                formatting.familiar_feature_detail(self.familiar_features_by_key[key])
-            )
-        elif table_id == "conditions" and key in self.conditions_by_slug:
-            self.query_one("#condition-detail", Static).update(self.conditions_by_slug[key]["desc"])
-        elif table_id == "resources" and key in self.resources_by_name:
-            self.query_one("#resource-detail", Static).update(formatting.resource_detail(self.resources_by_name[key]))
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        table_id = event.data_table.id
-        key = event.row_key.value
-
-        if table_id == "conditions":
-            active = self.state["active_conditions"]
-            if key in active:
-                active.remove(key)
-            else:
-                active.append(key)
-            state_store.save(self.character_id, self.state)
-
-            is_active = key in active
-            event.data_table.update_cell(
-                event.row_key, self._condition_name_col,
-                formatting.condition_name_cell(self.conditions_by_slug[key]["name"], is_active),
-                update_width=True,
-            )
-            event.data_table.update_cell(
-                event.row_key, self._condition_active_col, formatting.active_marker(is_active), update_width=True
-            )
-            self.render_active_effects()
-            self.render_combat_panel()
-
-        elif table_id == "spells" and key in self.spells_by_key:
-            self.cast_spell(self.spells_by_key[key])
-
-        elif table_id == "resources" and key in self.resources_by_name:
-            self.use_resource(key)
 
 
 if __name__ == "__main__":

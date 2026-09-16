@@ -43,6 +43,7 @@ storage/
                         state, the character registry, and app config (theme)
 
 ui/                  Textual-specific
+  tabs/                one module per main-tab TabPane - see below
   widgets.py           VimDataTable (hjkl + row cursor, interactive tables),
                         ReferenceTable (non-focusable, read-only tables), PromptBar
                         (non-modal bottom input for search/damage/heal/temp-HP/the
@@ -54,16 +55,44 @@ ui/                  Textual-specific
   formatting.py        Rich Text/markup helpers - presentation only, no app state
   icons.py             Nerd Font glyph constants
   constants.py         tab id/label/focus-target maps shared by app.py + commands.py
+                        + ui/tabs/*
   app.tcss             all CSS, external to keep app.py free of a giant string
 ```
 
 Keep this layering when adding features: sheet math goes in `domain/sheet.py`,
 anything that mutates tracked-but-not-DDB-owned state goes in
 `domain/combat.py`/`storage/state_store.py`, Rich formatting goes in
-`ui/formatting.py`. `app.py` should stay glue: fetch → call a pure function → put
-the result in a widget. Modules within a package import siblings relatively
-(`from . import sheet`); cross-package imports are absolute (`from domain import
-sheet`).
+`ui/formatting.py`. Modules within a package import siblings relatively (`from .
+import sheet`); cross-package imports are absolute (`from domain import sheet`).
+
+**`ui/tabs/` - one module per main-tab `TabPane`** (`SkillsTab`, `AttacksTab`,
+`SpellsTab`, `FamiliarTab`, `ResourcesTab`, `InventoryTab`, `ConditionsTab`). Each
+is a real `TabPane` subclass owning its own widgets' `compose()`/`on_mount()`
+(column setup) plus a `populate(data)` (from fresh D&D Beyond data) and/or
+`refresh_data()` (from local combat-tracker state) method, and any
+`on_data_table_row_highlighted`/`on_data_table_row_selected` handling that's
+purely local to that tab's own table - Textual only calls a handler defined on
+an actual ancestor of the event's source widget, so e.g. `AttacksTab`'s handler
+never has to check *which* table fired (it can only be `#attacks`, the one table
+inside it), unlike the old single flat App-level handler this replaced.
+`app.py` stays glue: it owns the sidebar (identity/abilities/saves/the combat
+panel), the single shared `CombatTracker`, and every action that mutates it
+(damage/heal/rest/spell-slot/resource/familiar) - those stay app-level rather
+than living on whichever tab triggered them, because a single action often has
+to refresh *several* tabs plus the sidebar at once (a Long Rest touches HP,
+Resources, and Spells together) and only `app.py` holds references to all of
+them. A tab reaches `self.app.<thing>` for that shared state (the
+`CombatTracker`, `self.app.state`, `self.app.render_combat_panel()`) rather than
+duplicating it - see any `ui/tabs/*.py` for the pattern.
+
+**Do not name a tab method `render`** - `TabPane` is a `Widget`, and `Widget`
+already defines `render()` as the hook Textual calls internally to draw the
+widget's own content; overriding it with an unrelated no-args side-effecting
+method breaks Textual's rendering (a real bug hit while building this: every
+tab's own "redraw from current state" method is named `refresh_data()`
+instead, precisely to avoid this collision - `populate()`/`load()` were checked
+and are safe, `refresh()` is not (also a real `Widget` method, triggers a
+repaint) - check `hasattr(Widget, name)` before picking a new one).
 
 **Gotcha carried over from before the reorg**: `state_store.STATE_DIR` is computed
 as `Path(__file__).parent.parent / ".state"` specifically so it resolves to the

@@ -11,6 +11,7 @@ from storage import state_store
 from textual.widgets import DataTable, TabbedContent
 from ui import icons
 from ui.commands import list_commands
+from ui.tabs import FamiliarTab, SpellsTab
 
 from .fixtures import (
     barbarian_character,
@@ -59,7 +60,7 @@ async def test_wizard_shows_regular_slots_and_no_pact_magic(monkeypatch, tmp_pat
         assert "Level 1" in combat_text
 
         spells = app.query_one("#spells", DataTable)
-        names = {app.spells_by_key[str(i)]["name"] for i in range(spells.row_count)}
+        names = {app.query_one(SpellsTab).spells_by_key[str(i)]["name"] for i in range(spells.row_count)}
         assert "Fireball" in names
 
 
@@ -198,7 +199,7 @@ async def test_summoning_a_familiar_loads_its_stat_block_and_tracks_hp(monkeypat
         app.dismiss_familiar()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert app.familiar_monster is None
+        assert app.query_one(FamiliarTab).monster is None
 
 
 @pytest.mark.asyncio
