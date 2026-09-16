@@ -670,6 +670,56 @@ def attacks(data: dict) -> list[dict]:
     return results
 
 
+# Find Familiar's own list of ordinary forms - the exact same 11 names no
+# matter which class/feat/race grants access to the spell (a Warlock's Pact
+# of the Chain, a Wizard's own spell list, the Ritual Caster feat, ...), so
+# this is spell-rules vocabulary fixed by the spell itself, not a per-class
+# fact (see "Not everything that looks like a fixed list is the forbidden
+# kind" below) - confirmed against the real Find Familiar spell text in a
+# real character's JSON, which also offers "or another Beast with a
+# Challenge Rating of 0" as an open-ended option this app doesn't attempt to
+# enumerate (there's no fixed list of those - it's DM/player choice).
+STANDARD_FAMILIAR_FORMS = ["Bat", "Cat", "Frog", "Hawk", "Lizard", "Octopus", "Owl", "Rat", "Raven", "Spider", "Weasel"]
+
+_MONSTER_TAG_RE = re.compile(r"\[monsters\](.*?)\[/monsters\]")
+
+
+def has_familiar(data: dict) -> bool:
+    """Whether the character currently knows Find Familiar - from any source
+    (an invocation, their own class list, a feat), read off known_spells like
+    everything else here rather than checking for "Warlock" or "Pact of the
+    Chain" by name."""
+    return any(sp["name"] == "Find Familiar" for sp in known_spells(data))
+
+
+def familiar_special_forms(data: dict) -> list[str]:
+    """Any *expanded* familiar form list granted by a feature (e.g. Pact of
+    the Chain's Imp/Pseudodragon/Quasit/Skeleton/etc). D&D Beyond tags every
+    monster reference in a feature's own description text with
+    `[monsters]...[/monsters]` - scanning for that tag, on any action whose
+    description also mentions "familiar", is what reads the actual expanded
+    list straight out of the granting feature's own text instead of
+    hardcoding "Pact of the Chain" or "Warlock" anywhere. The "mentions
+    familiar" check keeps this from picking up unrelated monster references
+    in some other feature's flavor text.
+    """
+    names = []
+    for action_list in data["actions"].values():
+        for action in action_list or []:
+            description = action.get("description") or ""
+            if "familiar" in description.lower():
+                names.extend(_MONSTER_TAG_RE.findall(description))
+    return names
+
+
+def familiar_forms(data: dict) -> list[str]:
+    """Every form the character's familiar can currently take, or [] if they
+    have no way to cast Find Familiar at all."""
+    if not has_familiar(data):
+        return []
+    return STANDARD_FAMILIAR_FORMS + familiar_special_forms(data)
+
+
 def inventory_items(data: dict) -> list[dict]:
     """Returns one dict per inventory item: name, quantity, equipped, weight, cost, description."""
     items = []

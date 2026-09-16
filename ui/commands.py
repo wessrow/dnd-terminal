@@ -10,7 +10,7 @@ from textual.fuzzy import Matcher
 from domain import sheet
 
 from . import icons
-from .constants import TAB_IDS, TAB_LABELS
+from .constants import CONDITIONAL_TABS, TAB_IDS, TAB_LABELS
 
 _DYNAMIC_PATTERNS = [
     (re.compile(r"^(damage|dmg|hurt)\s+(\d+)$", re.IGNORECASE),
@@ -45,9 +45,17 @@ def list_commands(app) -> list[tuple[str, callable]]:
             name = res["name"]
             commands.append((f"{icons.RESOURCES}  Use {name}", lambda n=name: app.use_resource(n)))
             commands.append((f"{icons.RESOURCES}  Restore {name}", lambda n=name: app.restore_resource(n)))
+    if app.has_familiar:
+        for form in app.familiar_forms_available:
+            commands.append((f"{icons.FAMILIAR}  Summon Familiar: {form}", lambda f=form: app.summon_familiar(f)))
+        if app.state.get("familiar_form"):
+            commands.append((f"{icons.FAMILIAR}  Dismiss Familiar", app.dismiss_familiar))
+            commands.append((f"{icons.DAMAGE}  Damage Familiar...", app.open_familiar_damage_input))
+            commands.append((f"{icons.HEAL}  Heal Familiar...", app.open_familiar_heal_input))
     for tab_id in TAB_IDS:
-        if tab_id == "tab-spells" and not app.is_spellcaster:
-            continue  # hidden tab (see DndSheetApp._sync_spells_tab_visibility) - nothing to jump to
+        gate = CONDITIONAL_TABS.get(tab_id)
+        if gate and not getattr(app, gate):
+            continue  # hidden tab (see DndSheetApp._sync_conditional_tabs) - nothing to jump to
         commands.append((f"Go to {TAB_LABELS[tab_id]} tab", lambda t=tab_id: app.goto_tab(t)))
     for theme_name in app.available_themes:
         commands.append((f"{icons.THEME}  Theme: {theme_name}", lambda t=theme_name: setattr(app, "theme", t)))

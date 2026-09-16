@@ -27,6 +27,8 @@ DEFAULT_STATE = {
     "inspiration_override": None,  # None = not yet touched locally, defer to D&D Beyond's value
     "resources_used": {},  # {"Rage": 1, ...} resource name -> local used-count override
     "spell_uses": {},  # {"Detect Magic": 1, ...} spell name -> local used-count override (feat/race free casts)
+    "familiar_form": None,  # currently-summoned familiar's form name (e.g. "Imp"), or None
+    "familiar_hp": None,  # local current HP for that familiar; None = full (the SRD statblock's own max)
 }
 
 

@@ -14,7 +14,7 @@ Screen {
     margin-bottom: 1;
 }
 
-#hp-bar {
+#hp-bar, #familiar-hp-bar {
     margin: 1 0;
 }
 
@@ -27,7 +27,7 @@ DataTable {
     margin-bottom: 1;
 }
 
-#skills, #attacks, #spells, #resources, #inventory, #conditions {
+#skills, #attacks, #spells, #familiar-features, #resources, #inventory, #conditions {
     height: 1fr;
 }
 

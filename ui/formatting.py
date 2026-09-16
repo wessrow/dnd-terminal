@@ -81,6 +81,35 @@ def attack_detail(attack: dict) -> str:
     return f"{header}\n\n{attack['notes'] or '(no notes)'}"
 
 
+def familiar_header(monster: dict, current_hp: int | None, max_hp: int | None) -> str:
+    hp_text = f"{current_hp}/{max_hp}" if current_hp is not None else str(max_hp)
+    ability_line = "  ".join(
+        f"{a['ability']} {a['score']} ({sheet.format_modifier(a['modifier'])})" for a in monster["abilities"]
+    )
+    resistances = []
+    if monster["damage_resistances"]:
+        resistances.append(f"Resist: {monster['damage_resistances']}")
+    if monster["damage_immunities"]:
+        resistances.append(f"Immune: {monster['damage_immunities']}")
+    if monster["condition_immunities"]:
+        resistances.append(f"Condition Immune: {monster['condition_immunities']}")
+    lines = [
+        f"[bold]{monster['name']}[/bold]  |  {monster['size_type']}, {monster['alignment']}",
+        f"{icons.HEART} HP {hp_text}   {icons.SHIELD} AC {monster['armor_class']} {monster['armor_desc']}".rstrip(),
+        f"{icons.SPEED} Speed {monster['speed']}   CR {monster['challenge_rating']}",
+        ability_line,
+        f"Senses {monster['senses']}  |  Languages {monster['languages']}",
+    ]
+    if resistances:
+        lines.append("  |  ".join(resistances))
+    return "\n".join(lines)
+
+
+def familiar_feature_detail(feature: dict) -> str:
+    header = f"[bold]{feature['name']}[/bold]  |  {feature['kind']}"
+    return f"{header}\n\n{feature['description'] or '(no description)'}"
+
+
 def resource_detail(resource: dict) -> str:
     remaining = resource["available"] - resource["used"]
     header = f"[bold]{resource['name']}[/bold]  |  {remaining}/{resource['available']} left  |  Resets: {resource['reset_type']}"

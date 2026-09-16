@@ -233,6 +233,8 @@ def test_reset_to_baseline_clears_every_local_override():
         "inspiration_override": None,
         "resources_used": {},
         "spell_uses": {},
+        "familiar_form": None,
+        "familiar_hp": None,
     }
 
 

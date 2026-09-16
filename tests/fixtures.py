@@ -87,6 +87,12 @@ def class_feature(name: str) -> dict:
     return {"name": name}
 
 
+def feature_action(name: str, description: str) -> dict:
+    """A plain (non-limited-use) named action, e.g. an invocation - what
+    sheet.familiar_special_forms reads its [monsters] tags from."""
+    return {"name": name, "description": description}
+
+
 def limited_use_action(name: str, max_uses: int, used: int = 0, reset_type: int = 2, description: str = "") -> dict:
     """A named action with a limitedUse block - the generic shape behind Rage,
     Second Wind, Bardic Inspiration, Relentless Endurance, Magical Cunning, etc."""
@@ -232,6 +238,48 @@ def fighter_character() -> dict:
                 limited_use_action("Second Wind", max_uses=1, used=0, reset_type=1,
                                     description="Bonus action to regain hit points."),
                 limited_use_action("Action Surge", max_uses=1, used=0, reset_type=1),
+            ],
+            "race": [], "background": [], "feat": [], "item": [],
+        },
+    )
+
+
+def warlock_familiar_character() -> dict:
+    """A level 5 Warlock with the Pact of the Chain invocation: Find Familiar
+    granted via spells.class (the invocation's free-cast grant, same shape as
+    a real character's), plus the invocation's own action carrying its
+    expanded familiar-form list as [monsters] bbcode tags in its description -
+    the exact format confirmed against a real character's D&D Beyond JSON
+    (see CLAUDE.md). Exercises sheet.has_familiar/familiar_forms end to end."""
+    return base_character(
+        stats=[
+            {"id": 1, "value": 8}, {"id": 2, "value": 12}, {"id": 3, "value": 14},
+            {"id": 4, "value": 10}, {"id": 5, "value": 10}, {"id": 6, "value": 16},
+        ],
+        classes=[
+            class_entry("Warlock", 5, class_features=["Pact Magic"], spell_rules=spell_rules(PACT_MAGIC_SLOTS)),
+        ],
+        pactMagic=[{"level": 1, "used": 0}, {"level": 2, "used": 0}],
+        spells={
+            "class": [
+                granted_spell(
+                    "Find Familiar", 1, "Conjuration", component_id=99,
+                    description=(
+                        "You gain the service of a familiar, a spirit that takes an animal form you choose: "
+                        "Bat, Cat, Frog, Hawk, Lizard, Octopus, Owl, Rat, Raven, Spider, or Weasel."
+                    ),
+                ),
+            ],
+            "feat": [], "race": [], "background": [], "item": [],
+        },
+        actions={
+            "class": [
+                feature_action(
+                    "Pact of the Chain: Attack",
+                    "You learn the Find Familiar spell. When you cast the spell, you choose one of the normal "
+                    "forms for your familiar or one of the following special forms: [monsters]Imp[/monsters], "
+                    "[monsters]Pseudodragon[/monsters], [monsters]Quasit[/monsters], [monsters]Sprite[/monsters].",
+                ),
             ],
             "race": [], "background": [], "feat": [], "item": [],
         },

@@ -19,12 +19,12 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from clients import ddb_client, open5e_client
-from domain import sheet
+from domain import familiar, sheet
 from domain.combat import CombatTracker
 from storage import state_store
 from ui import formatting, icons
 from ui.commands import list_commands, match_commands
-from ui.constants import SEARCHABLE_TABS, TAB_IDS, TAB_LABELS, TAB_PRIMARY_WIDGET
+from ui.constants import CONDITIONAL_TABS, SEARCHABLE_TABS, TAB_IDS, TAB_LABELS, TAB_PRIMARY_WIDGET
 from ui.screens import CharacterSelectScreen
 from ui.widgets import PromptBar, ReferenceTable, VimDataTable
 
@@ -39,6 +39,8 @@ PROMPT_PLACEHOLDERS = {
     "damage": f"{icons.DAMAGE}  Damage amount...",
     "heal": f"{icons.HEAL}  Heal amount...",
     "temp": f"{icons.SHIELD}  Temporary HP amount...",
+    "familiar-damage": f"{icons.DAMAGE}  Familiar damage amount...",
+    "familiar-heal": f"{icons.HEAL}  Familiar heal amount...",
     "command": f"{icons.COMMAND}  Command...",
 }
 
@@ -74,7 +76,11 @@ class DndSheetApp(App):
         self.items_by_key: dict[str, dict] = {}
         self.attacks_by_key: dict[str, dict] = {}
         self.resources_by_name: dict[str, dict] = {}
+        self.familiar_features_by_key: dict[str, dict] = {}
+        self.familiar_monster: dict | None = None  # domain.familiar.summarize_monster() of the summoned form
+        self.familiar_forms_available: list[str] = []
         self.is_spellcaster: bool = True  # updated per-character in populate()
+        self.has_familiar: bool = True  # updated per-character in populate()
         self._condition_name_col = None
         self._condition_active_col = None
         self._spell_name_col = None
@@ -120,6 +126,11 @@ class DndSheetApp(App):
                 with TabPane(f"{icons.SPELLS} Spells", id="tab-spells"):
                     yield VimDataTable(id="spells")
                     yield Static(id="spell-detail", classes="detail")
+                with TabPane(f"{icons.FAMILIAR} Familiar", id="tab-familiar"):
+                    yield Static(id="familiar-header")
+                    yield ProgressBar(id="familiar-hp-bar", show_percentage=False, show_eta=False)
+                    yield VimDataTable(id="familiar-features")
+                    yield Static(id="familiar-feature-detail", classes="detail")
                 with TabPane(f"{icons.RESOURCES} Resources", id="tab-resources"):
                     yield VimDataTable(id="resources")
                     yield Static(id="resource-detail", classes="detail")
@@ -154,6 +165,7 @@ class DndSheetApp(App):
         self.query_one("#attacks", DataTable).add_columns("Attack", "Type", "To Hit", "Damage", "Range", "Source")
         spell_columns = self.query_one("#spells", DataTable).add_columns("Spell", "Level", "School", "Source", "Notes")
         self._spell_name_col, _, _, _, self._spell_notes_col = spell_columns
+        self.query_one("#familiar-features", DataTable).add_columns("Feature", "Kind")
         self.query_one("#resources", DataTable).add_columns("Resource", "Uses", "Reset")
         self.query_one("#inventory", DataTable).add_columns("Item", "Qty", "Equipped", "Weight")
         columns = self.query_one("#conditions", DataTable).add_columns("Condition", "Active")
@@ -198,6 +210,47 @@ class DndSheetApp(App):
         self.populate(data)
         for widget_id in LOADING_WIDGETS:
             self.query_one(widget_id).loading = False
+        self.run_worker(self.load_familiar(), exclusive=True, group="familiar")
+
+    async def load_familiar(self) -> None:
+        """Fetches the currently-summoned familiar's SRD stat block from
+        Open5e, if any form is summoned - separate from load_character's own
+        fetch since it depends on local state (which form, if any) rather
+        than D&D Beyond data, and shouldn't block the rest of the sheet."""
+        table = self.query_one("#familiar-features", DataTable)
+        header = self.query_one("#familiar-header", Static)
+        self.familiar_monster = None
+        form = self.state.get("familiar_form")
+        if not form:
+            header.update("[dim]No familiar summoned. Use the command palette to summon one.[/dim]")
+            self.query_one("#familiar-hp-bar", ProgressBar).update(total=1, progress=0)
+            table.clear()
+            self.familiar_features_by_key.clear()
+            self.query_one("#familiar-feature-detail", Static).update("")
+            return
+
+        table.loading = True
+        try:
+            raw = await asyncio.to_thread(open5e_client.fetch_monster, form)
+        except requests.RequestException as exc:
+            table.loading = False
+            header.update(f"[bold red]Failed to load {form}'s stat block: {exc}[/bold red]")
+            return
+        table.loading = False
+
+        if raw is None:
+            header.update(
+                f"[bold]{form}[/bold]\n[dim]No SRD stat block available for this form "
+                "(likely a 2024-only monster not yet in the SRD dataset).[/dim]"
+            )
+            self.query_one("#familiar-hp-bar", ProgressBar).update(total=1, progress=0)
+            table.clear()
+            self.familiar_features_by_key.clear()
+            self.query_one("#familiar-feature-detail", Static).update("")
+            return
+
+        self.familiar_monster = familiar.summarize_monster(raw)
+        self.render_familiar()
 
     async def load_conditions(self) -> None:
         table = self.query_one("#conditions", DataTable)
@@ -340,6 +393,10 @@ class DndSheetApp(App):
             self.apply_heal(amount)
         elif mode == "temp":
             self.apply_temp_hp(amount)
+        elif mode == "familiar-damage":
+            self.apply_familiar_damage(amount)
+        elif mode == "familiar-heal":
+            self.apply_familiar_heal(amount)
 
     def _jump_to_match(self, query: str) -> None:
         tab_id = self.query_one(TabbedContent).active
@@ -434,7 +491,9 @@ class DndSheetApp(App):
         self.render_spells(rebuild=True)
 
         self.is_spellcaster = sheet.is_spellcaster(data)
-        self._sync_spells_tab_visibility()
+        self.has_familiar = sheet.has_familiar(data)
+        self.familiar_forms_available = sheet.familiar_forms(data)
+        self._sync_conditional_tabs()
 
         self.render_resources()
 
@@ -717,6 +776,77 @@ class DndSheetApp(App):
         else:
             self.query_one("#resource-detail", Static).update("[dim]No tracked resources for this character.[/dim]")
 
+    def render_familiar(self) -> None:
+        """Renders the currently-cached familiar_monster summary plus its
+        locally-tracked HP - called after load_familiar fetches a stat block,
+        and after any local HP change (damage/heal/summon/dismiss) so it never
+        needs to re-fetch Open5e just to reflect a HP change."""
+        monster = self.familiar_monster
+        header = self.query_one("#familiar-header", Static)
+        hp_bar = self.query_one("#familiar-hp-bar", ProgressBar)
+        if not monster:
+            return
+        current, max_hp = familiar.FamiliarTracker(monster, self.state).effective_hp()
+        header.update(formatting.familiar_header(monster, current, max_hp))
+        hp_bar.update(total=max_hp, progress=max(current, 0))
+
+        table = self.query_one("#familiar-features", DataTable)
+        table.clear()
+        self.familiar_features_by_key.clear()
+        for i, feature in enumerate(monster["features"]):
+            key = str(i)
+            self.familiar_features_by_key[key] = feature
+            table.add_row(feature["name"], feature["kind"], key=key)
+        if monster["features"]:
+            first = next(iter(self.familiar_features_by_key.values()))
+            self.query_one("#familiar-feature-detail", Static).update(formatting.familiar_feature_detail(first))
+        else:
+            self.query_one("#familiar-feature-detail", Static).update("")
+
+    def summon_familiar(self, form: str) -> None:
+        familiar.FamiliarTracker(None, self.state).summon(form)
+        state_store.save(self.character_id, self.state)
+        self.notify(f"{icons.FAMILIAR} Summoned {form}")
+        self.run_worker(self.load_familiar(), exclusive=True, group="familiar")
+
+    def dismiss_familiar(self) -> None:
+        form = self.state.get("familiar_form")
+        familiar.FamiliarTracker(None, self.state).dismiss()
+        state_store.save(self.character_id, self.state)
+        self.notify(f"{icons.FAMILIAR} Dismissed {form or 'familiar'}")
+        self.run_worker(self.load_familiar(), exclusive=True, group="familiar")
+
+    def open_familiar_damage_input(self) -> None:
+        self.open_prompt("familiar-damage")
+
+    def open_familiar_heal_input(self) -> None:
+        self.open_prompt("familiar-heal")
+
+    def apply_familiar_damage(self, amount: int) -> None:
+        result = familiar.FamiliarTracker(self.familiar_monster, self.state).apply_damage(amount)
+        if result is None:
+            self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
+            return
+        state_store.save(self.character_id, self.state)
+        self.render_familiar()
+        current, max_hp = result
+        self.notify(f"{icons.DAMAGE} Familiar took {amount} damage - {current}/{max_hp} HP")
+
+    def apply_familiar_heal(self, amount: int) -> None:
+        tracker = familiar.FamiliarTracker(self.familiar_monster, self.state)
+        effective = tracker.effective_hp()
+        if effective is None:
+            self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
+            return
+        current, max_hp = effective
+        if current >= max_hp:
+            self.notify(f"{icons.HEAL} Familiar HP Full ({max_hp}/{max_hp})")
+            return
+        current, max_hp = tracker.apply_heal(amount)
+        state_store.save(self.character_id, self.state)
+        self.render_familiar()
+        self.notify(f"{icons.HEAL} Familiar healed {amount} - {current}/{max_hp} HP")
+
     def _spellcasting_summary(self) -> str:
         lines = [f"{icons.SPELLS} Spellcasting:"]
         pact = self.combat.effective_pact_magic()
@@ -740,17 +870,43 @@ class DndSheetApp(App):
             self.query_one(widget_selector).focus()
 
     def _visible_tab_ids(self) -> list[str]:
-        """TAB_IDS minus Spells for a character with no spellcasting at all - a
-        pure martial has nothing to show there, so it's hidden rather than left
-        as a permanently empty pane (see _sync_spells_tab_visibility)."""
-        return [t for t in TAB_IDS if t != "tab-spells" or self.is_spellcaster]
+        """TAB_IDS minus any tab CONDITIONAL_TABS gates off for this character
+        (no Spells for a pure martial, no Familiar with no way to cast Find
+        Familiar) - hidden rather than left as a permanently empty pane."""
+        return [t for t in TAB_IDS if t not in CONDITIONAL_TABS or getattr(self, CONDITIONAL_TABS[t])]
 
-    def _sync_spells_tab_visibility(self) -> None:
+    def _sync_conditional_tabs(self) -> None:
         tabs = self.query_one(TabbedContent)
-        if self.is_spellcaster:
-            tabs.show_tab("tab-spells")
-        else:
-            tabs.hide_tab("tab-spells")  # Tabs.hide() moves focus off it automatically if active
+        # Move off any tab about to be hidden *before* hiding anything, using
+        # the freshly-updated self.* flags rather than relying on Tabs' own
+        # "move active off a tab I just hid" repair: that repair reads
+        # `active` reactively, and doesn't land until after this method
+        # returns, so hiding two tabs back-to-back in one tick (Spells +
+        # Familiar together, for a pure martial) leaves `active` pointing at
+        # whichever of the two got hidden second - confirmed by testing.
+        for tab_id, attr in CONDITIONAL_TABS.items():
+            if getattr(self, attr):
+                tabs.show_tab(tab_id)
+            else:
+                tabs.hide_tab(tab_id)
+        # Textual's Tabs.hide() relocates `active` off a hidden tab via a
+        # posted TabActivated message, processed on a later refresh - not
+        # synchronously. Hiding two tabs in the same tick (Spells + Familiar
+        # together, for a pure martial) can leave `active` resolving onto
+        # whichever tab got hidden second once those messages finally land,
+        # since each hide_tab() call's own relocation logic was computed
+        # before the other's had applied. Deferred to after Textual's own
+        # refresh/message processing so this reliably sees (and can correct)
+        # the real settled value instead of a stale one - confirmed by
+        # testing that fixing this synchronously, before OR after the loop,
+        # does not work.
+        self.call_after_refresh(self._fix_active_tab_if_hidden)
+
+    def _fix_active_tab_if_hidden(self) -> None:
+        tabs = self.query_one(TabbedContent)
+        visible = self._visible_tab_ids()
+        if tabs.active not in visible and visible:
+            self.goto_tab(visible[0])
 
     def action_next_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
@@ -779,6 +935,10 @@ class DndSheetApp(App):
             self.query_one("#item-detail", Static).update(formatting.item_detail(self.items_by_key[key]))
         elif table_id == "attacks" and key in self.attacks_by_key:
             self.query_one("#attack-detail", Static).update(formatting.attack_detail(self.attacks_by_key[key]))
+        elif table_id == "familiar-features" and key in self.familiar_features_by_key:
+            self.query_one("#familiar-feature-detail", Static).update(
+                formatting.familiar_feature_detail(self.familiar_features_by_key[key])
+            )
         elif table_id == "conditions" and key in self.conditions_by_slug:
             self.query_one("#condition-detail", Static).update(self.conditions_by_slug[key]["desc"])
         elif table_id == "resources" and key in self.resources_by_name:

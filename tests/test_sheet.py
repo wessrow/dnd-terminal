@@ -9,12 +9,14 @@ from .fixtures import (
     base_character,
     class_entry,
     class_spell,
+    feature_action,
     fighter_character,
     granted_spell,
     limited_use_action,
     multiclass_warlock_sorcerer_character,
     sense_modifier,
     spell_rules,
+    warlock_familiar_character,
     wizard_character,
 )
 
@@ -308,3 +310,37 @@ def test_passive_skill_works_for_any_skill_not_just_perception():
     data = wizard_character()
     investigation_mod = next(s["modifier"] for s in sheet.skills(data) if s["name"] == "Investigation")
     assert sheet.passive_skill(data, "Investigation") == 10 + investigation_mod
+
+
+# -- familiars: Find Familiar + any feature-granted expanded form list ---- #
+
+def test_has_familiar_false_without_find_familiar():
+    assert sheet.has_familiar(barbarian_character()) is False
+    assert sheet.has_familiar(fighter_character()) is False
+
+
+def test_familiar_forms_empty_without_find_familiar():
+    assert sheet.familiar_forms(barbarian_character()) == []
+
+
+def test_familiar_forms_combines_standard_and_feature_granted_forms():
+    data = warlock_familiar_character()
+    assert sheet.has_familiar(data) is True
+    forms = sheet.familiar_forms(data)
+    # standard Find Familiar forms
+    assert "Bat" in forms and "Cat" in forms and "Weasel" in forms
+    # Pact of the Chain's own expanded list, read from its [monsters] tags
+    assert forms[-4:] == ["Imp", "Pseudodragon", "Quasit", "Sprite"]
+
+
+def test_familiar_special_forms_ignores_unrelated_monster_tags():
+    """A [monsters] tag in a feature that has nothing to do with familiars
+    (no mention of "familiar" in its own description) must not leak into the
+    expanded form list - only Pact of the Chain's own grant should count."""
+    data = base_character(
+        actions={
+            "class": [feature_action("Beast Lore", "You know everything about [monsters]Owlbear[/monsters].")],
+            "race": [], "background": [], "feat": [], "item": [],
+        },
+    )
+    assert sheet.familiar_special_forms(data) == []

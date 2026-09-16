@@ -23,14 +23,20 @@ fetch_test.py        CLI smoke test, no TUI
 
 clients/             talks to the outside world - nothing else does
   ddb_client.py       D&D Beyond character fetch (unofficial API, read-only)
-  open5e_client.py     Open5e SRD conditions fetch
+  open5e_client.py     Open5e SRD conditions + monster stat block fetch
 
 domain/              pure logic - no Textual, no I/O, independently testable
   sheet.py            derives sheet values (ability mods, AC, HP, skills, spells,
-                       saves, languages, class resources, proficiency bonus) from
-                       raw D&D Beyond JSON - all class/race-agnostic, see below
+                       attacks, saves, languages, class resources, familiar
+                       availability, proficiency bonus) from raw D&D Beyond JSON -
+                       all class/race-agnostic, see below
   combat.py           CombatTracker: local HP / spell-slot / resource / inspiration
                        overlay on top of sheet.py's baseline
+  familiar.py         summarize_monster (normalizes an Open5e monster record) +
+                       FamiliarTracker: local current-HP overlay on top of Open5e's
+                       baseline for whichever familiar form is summoned - same
+                       "read-only reference data + local overlay" split as
+                       combat.py, just against Open5e instead of D&D Beyond
 
 storage/
   state_store.py       local JSON persistence under .state/: per-character combat
@@ -221,6 +227,38 @@ project root regardless of which package `state_store.py` lives in - don't
   the same Monk fixture) - D&D Beyond doesn't document the mapping anywhere,
   and an unconfirmed id is left blank rather than guessed, since a wrong
   damage type shown at the table is worse than no damage type shown.
+- **Familiars (Find Familiar, e.g. via a Warlock's Pact of the Chain) have
+  their expanded form list written directly into the granting feature's own
+  description text, tagged for D&D Beyond's own UI to hyperlink.** A
+  character with the Pact of the Chain invocation has an action named
+  something like "Pact of the Chain: Attack" in `data['actions']['class']`
+  whose `description` reads "...you choose one of the normal forms for your
+  familiar or one of the following special forms:
+  `[monsters]Imp[/monsters]`, `[monsters]Pseudodragon[/monsters]`, ..." -
+  every monster name is wrapped in D&D Beyond's own `[monsters]...[/monsters]`
+  bbcode tag (not an HTML tag - `strip_html` doesn't touch it). `sheet.
+  familiar_special_forms` regexes those tags out of any action whose
+  description mentions "familiar" - **not** hardcoded to "Pact of the
+  Chain"/"Warlock" - so any other class/race/feat that grants an expanded
+  familiar list the same way would pick up correctly too. The *base* Find
+  Familiar form list (Bat, Cat, Frog, Hawk, Lizard, Octopus, Owl, Rat, Raven,
+  Spider, Weasel) is instead hardcoded as `sheet.STANDARD_FAMILIAR_FORMS` -
+  that one's legitimately spell-rules vocabulary (identical regardless of
+  which class/feat grants the spell), confirmed against the real spell's
+  description text rather than assumed from memory: it does **not** include
+  Crab/Sea Horse/Poisonous Snake/Quipper, which past guesses (and the 2014
+  SRD) would have included - the 2024 PHB version of the spell dropped them
+  in favor of an open-ended "or another Beast with a Challenge Rating of 0"
+  option this app doesn't attempt to enumerate. Reference stat blocks for
+  whichever form is chosen come from Open5e (`clients.open5e_client.
+  fetch_monster`) - same "Open5e for reference text, D&D Beyond JSON for a
+  specific character's state" split as Conditions - filtered to the
+  `wotc-srd` document specifically, since Open5e also carries same-named
+  monsters from third-party content under the same name. Two of Pact of the
+  Chain's 2024-only special forms (Sphinx of Wonder, Slaad Tadpole) aren't in
+  Open5e's SRD dataset at all; `fetch_monster` returns `None` for those and
+  the Familiar tab says so rather than erroring - HP just can't be tracked
+  against a stat block that doesn't exist anywhere yet.
 
 ## Never hardcode per class/race/feat - the character JSON always self-describes
 
@@ -238,6 +276,7 @@ generically, never adding a name-check or an external ruleset dataset:
 | "This Warlock has a custom +6 AC item" | any character can attach a custom bonus via D&D Beyond's "Customize" panel, stored in `data['characterValues']` (opaque `typeId`, not class/race/feat-scoped at all) | `sheet.custom_adjustments` |
 | "Monks are proficient with shortswords" | any weapon with `isMonkWeapon: true`, if the character has an `isMartialArts: true` action anywhere | `sheet._has_martial_arts` |
 | "A Fighter's Second Wind isn't a real attack, but a Monk's Unarmed Strike is" | `attackTypeRange` non-null on the action, not `displayAsAttack` (which also flags damage riders like Sneak Attack) | `sheet.attacks` |
+| "Warlocks get a special familiar list via Pact of the Chain" | any action whose description mentions "familiar" and tags monsters with `[monsters]...[/monsters]` | `sheet.familiar_special_forms` |
 
 **The rule going forward**: before adding any check that names a specific class,
 race, or feat, first look for the generic field the character JSON already uses
@@ -438,3 +477,19 @@ async with app.run_test(size=(170, 50)) as pilot:
   default and only flips `can_focus = True` for the moment it's actually shown
   (`app.open_prompt`/`close_prompt`). If a new always-mounted `Input`-like widget
   gets added and keybindings mysteriously stop firing, check this first.
+- **`TabbedContent.hide_tab()` twice in the same synchronous call can leave
+  `.active` pointing at a tab that's now hidden.** `hide_tab()` moves `active`
+  off the tab being hidden *if that tab is currently active* - but that
+  relocation happens via a posted message, resolved on a later refresh, not
+  synchronously. Hide two tabs back-to-back in one call (e.g.
+  `DndSheetApp._sync_conditional_tabs` hiding both Spells and Familiar for a
+  pure martial) and the second `hide_tab()` call still sees the *pre-loop*
+  `active`, so it doesn't realize `active` is about to land on the tab it's
+  hiding too - reproduced directly: `.active` settles on Familiar (hidden)
+  instead of Skills. Neither checking-and-fixing `.active` before the hide
+  loop nor immediately after it works, for the same reason (the relocation
+  from the *first* `hide_tab()` hasn't landed yet either time) - the fix has
+  to be deferred past Textual's own refresh, via
+  `self.call_after_refresh(self._fix_active_tab_if_hidden)`. If a third
+  conditionally-hidden tab is ever added, this same fallback still covers it
+  - it doesn't special-case which or how many tabs got hidden.

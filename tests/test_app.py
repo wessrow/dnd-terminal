@@ -9,16 +9,36 @@ from app import DndSheetApp
 from clients import ddb_client, open5e_client
 from storage import state_store
 from textual.widgets import DataTable, TabbedContent
+from ui import icons
 from ui.commands import list_commands
 
-from .fixtures import barbarian_character, fighter_character, multiclass_warlock_sorcerer_character, wizard_character
+from .fixtures import (
+    barbarian_character,
+    fighter_character,
+    multiclass_warlock_sorcerer_character,
+    warlock_familiar_character,
+    wizard_character,
+)
 
 FAKE_CONDITIONS = [{"name": "Prone", "slug": "prone", "desc": "You are prone."}]
+
+FAKE_IMP = {
+    "name": "Imp", "size": "Tiny", "type": "Fiend", "subtype": "devil", "alignment": "lawful evil",
+    "armor_class": 13, "armor_desc": None, "hit_points": 10, "hit_dice": "3d4+3",
+    "speed": {"walk": 20, "fly": 40},
+    "strength": 6, "dexterity": 17, "constitution": 13, "intelligence": 11, "wisdom": 12, "charisma": 14,
+    "senses": "darkvision 120 ft.", "languages": "Infernal, Common", "challenge_rating": "1",
+    "damage_resistances": "", "damage_immunities": "", "condition_immunities": "",
+    "actions": [{"name": "Sting", "desc": "Melee Weapon Attack: +5 to hit."}],
+    "bonus_actions": None, "reactions": None, "legendary_actions": None,
+    "special_abilities": [{"name": "Shapechanger", "desc": "The imp can polymorph."}],
+}
 
 
 def _make_app(monkeypatch, tmp_path, character_data: dict) -> DndSheetApp:
     monkeypatch.setattr(ddb_client, "fetch_character", lambda character_id: character_data)
     monkeypatch.setattr(open5e_client, "fetch_conditions", lambda: FAKE_CONDITIONS)
+    monkeypatch.setattr(open5e_client, "fetch_monster", lambda name: FAKE_IMP if name == "Imp" else None)
     monkeypatch.setattr(ddb_client, "get_character_id", lambda: "test-id")
     monkeypatch.setattr(state_store, "STATE_DIR", tmp_path)
     monkeypatch.setattr(state_store, "REGISTRY_PATH", tmp_path / "characters.json")
@@ -124,6 +144,61 @@ async def test_spells_tab_reappears_when_switching_to_a_caster(monkeypatch, tmp_
         await pilot.pause()
 
         assert not tabs.get_tab("tab-spells").has_class("-hidden")
+
+
+@pytest.mark.asyncio
+async def test_familiar_tab_hidden_without_find_familiar(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, fighter_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        tabs = app.query_one(TabbedContent)
+        assert tabs.get_tab("tab-familiar").has_class("-hidden")
+        assert "Go to Familiar tab" not in [text for text, _ in list_commands(app)]
+
+
+@pytest.mark.asyncio
+async def test_familiar_tab_shown_for_pact_of_the_chain_warlock(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, warlock_familiar_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        tabs = app.query_one(TabbedContent)
+        assert not tabs.get_tab("tab-familiar").has_class("-hidden")
+        commands = [text for text, _ in list_commands(app)]
+        assert f"{icons.FAMILIAR}  Summon Familiar: Imp" in commands
+        assert f"{icons.FAMILIAR}  Summon Familiar: Bat" in commands
+
+
+@pytest.mark.asyncio
+async def test_summoning_a_familiar_loads_its_stat_block_and_tracks_hp(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, warlock_familiar_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        app.summon_familiar("Imp")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        header_text = str(app.query_one("#familiar-header").render())
+        assert "Imp" in header_text
+        assert "10" in header_text  # full HP shown
+
+        app.apply_familiar_damage(4)
+        await pilot.pause()
+        header_text = str(app.query_one("#familiar-header").render())
+        assert "6/10" in header_text
+
+        app.dismiss_familiar()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.familiar_monster is None
 
 
 @pytest.mark.asyncio
