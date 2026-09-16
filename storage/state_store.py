@@ -63,14 +63,18 @@ def load_registry() -> dict:
     return json.loads(REGISTRY_PATH.read_text())
 
 
-def remember_character(character_id: str, name: str) -> None:
+def remember_character(character_id: str, name: str, classes: str = "") -> None:
+    """`classes` is a display string like "Warlock 5" or "Fighter 3, Rogue 2"
+    (domain.sheet.class_summary) - stored so CharacterSelectScreen can show it
+    without re-fetching every character just to populate the picker."""
     registry = load_registry()
     for entry in registry["characters"]:
         if entry["id"] == character_id:
             entry["name"] = name
+            entry["classes"] = classes
             break
     else:
-        registry["characters"].append({"id": character_id, "name": name})
+        registry["characters"].append({"id": character_id, "name": name, "classes": classes})
     registry["last_used"] = character_id
     STATE_DIR.mkdir(exist_ok=True)
     REGISTRY_PATH.write_text(json.dumps(registry, indent=2))

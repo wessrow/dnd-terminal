@@ -97,14 +97,26 @@ def limited_use_action(name: str, max_uses: int, used: int = 0, reset_type: int 
     }
 
 
-def class_entry(name: str, level: int, class_features: list[str] = (), spell_rules: dict | None = None) -> dict:
+def class_entry(name: str, level: int, class_features: list[str] = (), spell_rules: dict | None = None,
+                 can_cast_spells: bool | None = None, subclass_can_cast_spells: bool = False) -> dict:
+    """`can_cast_spells` defaults to True whenever spell_rules is given (the
+    common case - a real caster). Pass `can_cast_spells=False` explicitly to
+    model real D&D Beyond behavior for non-caster subclasses: a Fighter's
+    *class* definition always carries a populated spellRules table (the
+    Eldritch Knight progression) even when the character picked a non-casting
+    subclass like Champion - `canCastSpells` (class or subclass) is the actual
+    gate, not whether spellRules happens to be present. See sheet.spell_slots."""
+    if can_cast_spells is None:
+        can_cast_spells = spell_rules is not None
     return {
         "level": level,
         "definition": {
             "name": name,
             "classFeatures": [class_feature(f) for f in class_features],
             "spellRules": spell_rules,
+            "canCastSpells": can_cast_spells,
         },
+        "subclassDefinition": {"canCastSpells": subclass_can_cast_spells},
     }
 
 
@@ -198,16 +210,22 @@ def barbarian_character() -> dict:
 
 
 def fighter_character() -> dict:
-    """A level 5 single-class Fighter: Second Wind as a Short-Rest resource -
-    the generic resource path's other reset type (Rage/Warlock above are both
-    Long Rest)."""
+    """A level 5 single-class Fighter (Champion subclass, no casting): Second Wind
+    as a Short-Rest resource - the generic resource path's other reset type
+    (Rage/Warlock above are both Long Rest). Also models a real D&D Beyond
+    quirk: Fighter's class definition carries a populated spellRules table (the
+    Eldritch Knight progression) even for a non-casting subclass like this one -
+    can_cast_spells=False is what should suppress it, not the absence of
+    spellRules (see sheet.spell_slots / test_spell_slots_ignores_a_non_caster_..)."""
     return base_character(
         stats=[
             {"id": 1, "value": 16}, {"id": 2, "value": 14}, {"id": 3, "value": 14},
             {"id": 4, "value": 10}, {"id": 5, "value": 12}, {"id": 6, "value": 8},
         ],
         classes=[
-            class_entry("Fighter", 5, class_features=["Second Wind", "Action Surge", "Extra Attack"]),
+            class_entry("Fighter", 5, class_features=["Second Wind", "Action Surge", "Extra Attack"],
+                        spell_rules=spell_rules([[0] * 9] * 3 + [[2, 0, 0, 0, 0, 0, 0, 0, 0]] * 3),
+                        can_cast_spells=False),
         ],
         actions={
             "class": [

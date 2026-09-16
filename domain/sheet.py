@@ -329,7 +329,18 @@ def spell_slots(data: dict) -> list[tuple[int, int, int]]:
     for cls in data["classes"]:
         if _has_pact_magic(cls):
             continue
-        rules = cls["definition"].get("spellRules")
+        definition = cls["definition"]
+        subclass = cls.get("subclassDefinition") or {}
+        # A class's own `spellRules` table is present (and often non-zero)
+        # regardless of subclass - e.g. every Fighter's class definition carries
+        # the Eldritch Knight slot progression even when the actual subclass is
+        # a non-caster like Champion. `canCastSpells` (checked on the class OR
+        # the subclass, since some casting subclasses like Eldritch Knight/Arcane
+        # Trickster only set it on the subclass) is the real gate - never infer
+        # "this class casts" from spellRules merely existing.
+        if not (definition.get("canCastSpells") or subclass.get("canCastSpells")):
+            continue
+        rules = definition.get("spellRules")
         if not rules:
             continue
         level_slots = rules["levelSpellSlots"][cls["level"]]
@@ -462,6 +473,201 @@ def known_spells(data: dict) -> list[dict]:
     spells.extend(granted.values())
     spells.sort(key=lambda s: (s["level"], s["name"]))
     return spells
+
+
+def is_spellcaster(data: dict) -> bool:
+    """True if the character has any way to cast a spell at all - a known spell,
+    a regular spell slot, or Pact Magic. A pure martial (Fighter/Rogue/Monk with
+    no casting feature) has none of these; this is what decides whether the
+    Spells tab is relevant at all, purely from data already read for other
+    purposes - never a class-name check, so a martial who later picks up a
+    feat like Magic Initiate starts showing True automatically."""
+    return bool(known_spells(data)) or bool(spell_slots(data)) or pact_magic_slots(data) is not None
+
+
+# D&D Beyond weapon item modifier subtype/id vocabulary. `categoryId` on a
+# weapon's own definition (1 = Simple, 2 = Martial) is confirmed against real
+# characters - a Fighter proficient in both categories owns weapons with both
+# ids, matched against the `simple-weapons`/`martial-weapons` proficiency
+# modifier subtypes skills/saves already key off. `attackType` (1 = Melee,
+# 2 = Ranged) is likewise confirmed (a Dart - simple ranged - has attackType
+# 2; every melee weapon seen, including thrown ones like Dagger/Handaxe, has
+# attackType 1). Fixed D&D Beyond protocol vocabulary, not a per-class thing.
+WEAPON_CATEGORY_PROFICIENCY = {1: "simple-weapons", 2: "martial-weapons"}
+
+# damageTypeId on a feature-granted attack action (see attacks() below) - only
+# 1 is confirmed (a real Monk's Unarmed Strike, which is Bludgeoning by rule).
+# D&D Beyond doesn't document this mapping anywhere; unknown ids fall back to
+# "" rather than guessing, since a wrong damage type shown at the table is
+# worse than a blank one.
+DAMAGE_TYPE_IDS = {1: "Bludgeoning"}
+
+# data['actions'] category -> the label shown in the Attacks tab's Source
+# column - same naming as known_spells' granted-spell sources ("Class
+# Feature" specifically, not "Class"/"Feature" - see known_spells docstring).
+ACTION_SOURCE_LABELS = {
+    "class": "Class Feature", "race": "Race", "feat": "Feat",
+    "background": "Background", "item": "Item",
+}
+
+
+def _format_damage(dice: dict | None, flat_value: int | None, ability_mod: int) -> str:
+    """`dice` (a weapon's own damage block, or a feature action's) takes
+    priority; a feature action with no dice but a flat `value` (D&D Beyond's
+    shape for a no-roll fixed amount - e.g. a 2024 Unarmed Strike's flat 1)
+    gets summed straight into one number instead of dice notation, since
+    there's no die to roll. Neither present means genuinely unknown -
+    returned as "-" rather than silently showing just the ability modifier."""
+    if dice:
+        bonus = ability_mod
+        return dice["diceString"] + (format_modifier(bonus) if bonus else "")
+    if flat_value is not None:
+        return str(flat_value + ability_mod)
+    return "-"
+
+
+def _format_range(range_ft: int | None, long_range: int | None) -> str:
+    if not range_ft:
+        return "-"
+    if long_range and long_range != range_ft:
+        return f"{range_ft}/{long_range} ft"
+    return f"{range_ft} ft"
+
+
+def _has_martial_arts(data: dict) -> bool:
+    """Whether the character has a Martial Arts-style feature - the generic
+    signal (any action anywhere flagged `isMartialArts`) behind "proficient
+    with monk weapons", not a Monk class-name check. This is also what makes
+    a Monk's own shortsword (categoryId 2 = Martial, which `martial-weapons`
+    proficiency alone would miss) come back proficient - see attacks()."""
+    return any(
+        action.get("isMartialArts")
+        for action_list in data["actions"].values()
+        for action in (action_list or [])
+    )
+
+
+def _weapon_attack_ability_mod(data: dict, weapon_def: dict) -> int:
+    """Strength, unless the weapon is Finesse (better of Str/Dex, checked
+    before melee/ranged - this also covers a Finesse *ranged* weapon like a
+    Dart, a real case) or it's a ranged weapon by its own attackType (Dex)."""
+    scores = ability_scores(data)
+    str_mod = ability_modifier(scores[1])
+    dex_mod = ability_modifier(scores[2])
+    properties = {p["name"] for p in (weapon_def.get("properties") or [])}
+    if "Finesse" in properties:
+        return max(str_mod, dex_mod)
+    if weapon_def.get("attackType") == 2:
+        return dex_mod
+    return str_mod
+
+
+def attacks(data: dict) -> list[dict]:
+    """Every attack the character can currently make - equipped-weapon
+    attacks, plus any class/race/feat action D&D Beyond itself flags as a
+    standalone attack (a Monk's Unarmed Strike/Flurry of Blows, Deflect
+    Missiles' returned-missile attack, etc.). Read generically off
+    self-describing fields already used elsewhere in this module, not a
+    per-class/weapon hardcode - see WEAPON_CATEGORY_PROFICIENCY above.
+
+    Weapon attacks: a magic weapon's flat to-hit/damage bonus lives in the
+    item's own `grantedModifiers` as a `type: "bonus"` entry (applies to
+    both, same as the 5e rule for a +N weapon) - added in. A *conditional*
+    extra-damage rider (`type: "damage"`, e.g. a Giant Slayer's bonus only
+    "Against Giants") is surfaced as a note instead of folded into the
+    headline damage, since whether it applies depends on the target.
+    Proficiency also checks `isMonkWeapon` + `_has_martial_arts` - a Monk's
+    own shortsword is Martial (categoryId 2), which `martial-weapons`
+    proficiency alone would miss and silently under-report the to-hit bonus
+    on real Monk data (caught by testing against a real level-9 Monk, whose
+    Shortsword showed no proficiency bonus until this was added).
+
+    Feature attacks: filtered to `data['actions']` entries with
+    `attackTypeRange` set (1 = melee, 2 = ranged) - confirmed to be the actual
+    "this is a rollable attack" signal, not `displayAsAttack` alone. Damage
+    riders with no attack of their own (Sneak Attack, a Cleric's Blessed
+    Strikes) and reactive non-attacks (Deflect Missiles' own damage
+    reduction) all set `displayAsAttack` too but leave `attackTypeRange` null
+    - verified against a real Monk (Unarmed Strike/Flurry both correctly
+    included), a real Cleric (Blessed Strikes correctly excluded), and a real
+    Rogue (Sneak Attack correctly excluded).
+    """
+    scores = ability_scores(data)
+    prof_bonus = proficiency_bonus(data)
+    has_martial_arts = _has_martial_arts(data)
+    results = []
+
+    for item in data["inventory"]:
+        d = item["definition"]
+        if not item.get("equipped") or d.get("filterType") != "Weapon" or not d.get("damage"):
+            continue
+        ability_mod = _weapon_attack_ability_mod(data, d)
+        subtype = WEAPON_CATEGORY_PROFICIENCY.get(d.get("categoryId"))
+        proficient = (bool(subtype) and _proficiency_multiplier(data, subtype) >= 1.0) or (
+            has_martial_arts and d.get("isMonkWeapon")
+        )
+
+        granted = d.get("grantedModifiers") or []
+        magic_bonus = sum(m.get("value") or 0 for m in granted if m.get("type") == "bonus")
+        conditional_notes = [
+            f"+{m['dice']['diceString']} {m.get('friendlySubtypeName') or 'damage'}"
+            + (f" ({m['restriction']})" if m.get("restriction") else "")
+            for m in granted
+            if m.get("type") == "damage" and m.get("dice")
+        ]
+
+        properties = [p["name"] for p in (d.get("properties") or [])]
+        results.append(
+            {
+                "name": d["name"],
+                "attack_type": "Ranged" if d.get("attackType") == 2 else "Melee",
+                "to_hit": ability_mod + (prof_bonus if proficient else 0) + magic_bonus,
+                "damage": _format_damage(d["damage"], None, ability_mod + magic_bonus),
+                "damage_type": d.get("damageType") or "",
+                "range": _format_range(d.get("range"), d.get("longRange")),
+                "notes": ", ".join(properties + conditional_notes),
+                "source": "Weapon",
+                "proficient": proficient,
+            }
+        )
+
+    for category, source_label in ACTION_SOURCE_LABELS.items():
+        for action in data["actions"].get(category) or []:
+            if not action.get("displayAsAttack") or action.get("attackTypeRange") not in (1, 2):
+                continue
+            is_ranged = action["attackTypeRange"] == 2
+
+            stat_id = action.get("abilityModifierStatId")
+            if stat_id:
+                ability_mod = ability_modifier(scores[stat_id])
+            elif action.get("isMartialArts"):
+                ability_mod = max(ability_modifier(scores[1]), ability_modifier(scores[2]))
+            else:
+                ability_mod = ability_modifier(scores[2 if is_ranged else 1])
+
+            if action.get("fixedToHit") is not None:
+                to_hit = action["fixedToHit"]
+            else:
+                to_hit = ability_mod + (prof_bonus if action.get("isProficient") else 0)
+
+            action_range = action.get("range") or {}
+            range_ft = action_range.get("range") or (None if is_ranged else 5)
+
+            results.append(
+                {
+                    "name": action["name"],
+                    "attack_type": "Ranged" if is_ranged else "Melee",
+                    "to_hit": to_hit,
+                    "damage": _format_damage(action.get("dice"), action.get("value"), ability_mod),
+                    "damage_type": DAMAGE_TYPE_IDS.get(action.get("damageTypeId"), ""),
+                    "range": _format_range(range_ft, action_range.get("longRange")),
+                    "notes": strip_html(action.get("snippet") or ""),
+                    "source": source_label,
+                    "proficient": bool(action.get("isProficient")),
+                }
+            )
+
+    return results
 
 
 def inventory_items(data: dict) -> list[dict]:

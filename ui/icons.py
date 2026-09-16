@@ -7,6 +7,7 @@ CHARACTER = ""  # nf-fa-user
 ABILITIES = ""  # nf-fa-flask
 SAVES = ""  # nf-fa-shield
 COMBAT = ""  # nf-fa-shield
+ATTACKS = ""  # nf-fa-crosshairs
 HEART = ""  # nf-fa-heart
 SKILLS = ""  # nf-fa-star
 SKILL_PROFICIENT = ""  # nf-fa-star

@@ -27,7 +27,7 @@ DataTable {
     margin-bottom: 1;
 }
 
-#skills, #spells, #resources, #inventory, #conditions {
+#skills, #attacks, #spells, #resources, #inventory, #conditions {
     height: 1fr;
 }
 

@@ -65,6 +65,22 @@ def item_detail(item: dict) -> str:
     return f"{header}\n\n{item['description'] or '(no description)'}"
 
 
+def attack_to_hit_cell(to_hit: int, proficient: bool) -> Text:
+    """Dims a not-proficient attack's to-hit, same idea as spell_name_cell
+    graying out an uncastable spell - a quick "this one's worse" signal."""
+    text = sheet.format_modifier(to_hit)
+    return Text(text) if proficient else Text(text, style="dim")
+
+
+def attack_detail(attack: dict) -> str:
+    header = (
+        f"[bold]{attack['name']}[/bold]  |  {attack['attack_type']}  |  "
+        f"To Hit: {sheet.format_modifier(attack['to_hit'])}  |  "
+        f"Damage: {attack['damage']} {attack['damage_type']}  |  Range: {attack['range']}"
+    )
+    return f"{header}\n\n{attack['notes'] or '(no notes)'}"
+
+
 def resource_detail(resource: dict) -> str:
     remaining = resource["available"] - resource["used"]
     header = f"[bold]{resource['name']}[/bold]  |  {remaining}/{resource['available']} left  |  Resets: {resource['reset_type']}"

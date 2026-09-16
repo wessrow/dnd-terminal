@@ -14,6 +14,7 @@ from .fixtures import (
     limited_use_action,
     multiclass_warlock_sorcerer_character,
     sense_modifier,
+    spell_rules,
     wizard_character,
 )
 
@@ -101,6 +102,26 @@ def test_spell_slots_empty_for_a_non_caster():
     data = barbarian_character()
     assert sheet.spell_slots(data) == []
     assert sheet.pact_magic_slots(data) is None
+
+
+def test_spell_slots_ignores_a_non_caster_subclass_with_populated_spell_rules():
+    """Real D&D Beyond quirk: a Fighter's class definition carries a populated
+    spellRules table (the Eldritch Knight progression) no matter which subclass
+    was actually picked - a Champion Fighter must show zero spell slots despite
+    that table being non-empty, since canCastSpells is False on both the class
+    and the subclass."""
+    assert sheet.spell_slots(fighter_character()) == []
+
+
+def test_spell_slots_included_when_only_the_subclass_grants_casting():
+    """An Eldritch Knight/Arcane Trickster-style subclass: canCastSpells is False
+    on the base class but True on the subclass - must still count."""
+    data = base_character(
+        classes=[class_entry("Fighter", 3, can_cast_spells=False, subclass_can_cast_spells=True,
+                              spell_rules=spell_rules([[0] * 9] * 3 + [[2, 0, 0, 0, 0, 0, 0, 0, 0]]))],
+    )
+    slots = {level: (used, available) for level, used, available in sheet.spell_slots(data)}
+    assert slots == {1: (0, 2)}
 
 
 def test_spell_slots_for_a_single_full_caster():
@@ -256,6 +277,18 @@ def test_known_spells_does_not_confuse_feature_grants_with_chosen_class_spells()
     )
     by_source = {s["name"]: s["source"] for s in sheet.known_spells(data)}
     assert by_source == {"Mage Armor": "Class", "Fireball": "Class Feature"}
+
+
+# -- is_spellcaster: drives whether the Spells tab is shown at all -------- #
+
+def test_is_spellcaster_false_for_a_pure_martial():
+    assert sheet.is_spellcaster(fighter_character()) is False
+    assert sheet.is_spellcaster(barbarian_character()) is False
+
+
+def test_is_spellcaster_true_for_any_kind_of_caster():
+    assert sheet.is_spellcaster(wizard_character()) is True
+    assert sheet.is_spellcaster(multiclass_warlock_sorcerer_character()) is True
 
 
 # -- senses / passive scores: generic modifiers, not race-specific -------- #

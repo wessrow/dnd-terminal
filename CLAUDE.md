@@ -90,6 +90,30 @@ project root regardless of which package `state_store.py` lives in - don't
   feature list is the source of truth. Apply the same principle before adding any
   other "is this class an X" check: look for the matching class feature by name
   first, only fall back to a name/dataset lookup if the JSON truly doesn't say.
+- **A class's `spellRules` table is present (often with real non-zero slot
+  counts) whether or not the character can actually cast anything.** D&D Beyond
+  ships one shared class definition per class *family*, so every Fighter's JSON
+  carries the Eldritch Knight slot progression, every Rogue's carries the Arcane
+  Trickster one, etc., regardless of which subclass was actually picked - a
+  plain Champion Fighter's `classes[].definition.spellRules.levelSpellSlots`
+  still has non-zero entries at level 3+. The real gate is
+  `canCastSpells` - checked on **both** `definition.canCastSpells` and
+  `subclassDefinition.canCastSpells` (a caster subclass like Eldritch Knight
+  sets it on the subclass while the base Fighter class itself stays `False`;
+  Warlock/Cleric/Wizard set it on the class itself and `False` on the
+  subclass) - never on whether `spellRules` merely exists. `sheet.spell_slots`
+  checks this before reading the table at all; found by re-testing against a
+  real level-9 Champion Fighter, who would otherwise have silently shown 4
+  level-1 and 2 level-2 spell slots he can't actually use.
+- **A character with no spellcasting at all** - `sheet.is_spellcaster` is False,
+  i.e. no known spells, no regular slots (after the `canCastSpells` check
+  above), and no Pact Magic - gets the Spells tab hidden entirely
+  (`DndSheetApp._sync_spells_tab_visibility`, via `TabbedContent.hide_tab`/
+  `show_tab`) rather than shown with a permanently empty table. `]`/`[` cycling
+  and the command palette's "Go to Spells tab" both skip it while hidden. This
+  re-evaluates on every character switch/refresh, purely from `is_spellcaster`,
+  so a martial who later picks up a spell via a feat (Magic Initiate, etc.)
+  would have the tab reappear automatically.
 - Skill/save proficiency isn't a boolean flag on the skill - it's scattered across
   `modifiers.{race,class,background,feat,item,condition}`, matched by `subType`
   slug (e.g. `"arcana"`, `"wisdom-saving-throws"`) and `type`
@@ -151,6 +175,52 @@ project root regardless of which package `state_store.py` lives in - don't
   otherwise) was needed to support resources for arbitrary classes: D&D Beyond's
   own JSON already carries per-character use-counts, which a static SRD dataset
   couldn't provide anyway.
+- **Weapon attacks (to-hit/damage) aren't a separate computed field either** -
+  `sheet.attacks` derives them from equipped `inventory` items the same way
+  `armor_class` derives AC: ability modifier (Strength, or the better of
+  Str/Dex if the weapon has the `Finesse` property, or Dex if the weapon's own
+  `attackType` is `2`/ranged) + proficiency bonus if proficient + any flat
+  `type: "bonus"` `grantedModifiers` entry on the item (a magic weapon's +N,
+  applies to both to-hit and damage per the 5e rule). A weapon's own
+  `range`/`longRange` fields are already populated for *every* weapon, not
+  just ranged/thrown ones (a plain Sickle carries `range: 5, longRange: 5`) -
+  no need to hardcode "melee reach is 5 ft" anywhere.
+  Weapon *category* proficiency is `categoryId` on the item (`1` = Simple,
+  `2` = Martial - confirmed against a real Fighter proficient in both, and a
+  Dart's `attackType: 2` confirming 2 = Ranged there too), matched against the
+  same `simple-weapons`/`martial-weapons` modifier subtypes skills/saves
+  already use. **This alone isn't sufficient** - a Monk's shortsword is
+  Martial (`categoryId: 2`) but the Monk is still proficient with it, because
+  "proficient with monk weapons" isn't its own discrete proficiency modifier;
+  it's implied by the weapon's own `isMonkWeapon: true` flag plus the
+  character having *any* action flagged `isMartialArts: true` anywhere in
+  `data['actions']` (`sheet._has_martial_arts` - keyed off the generic flag,
+  not the class name "Monk"). Missed on the first pass, caught by testing
+  against a real level-9 Monk whose Shortsword showed no proficiency bonus.
+- **A class/race/feat *action* being a real standalone attack (vs. a damage
+  rider or a non-attack reaction) has its own generic signal, and it is NOT
+  `displayAsAttack`.** Every action in `data['actions']` carries a shared
+  "could this be attack-shaped" schema (`dice`, `value`, `damageTypeId`,
+  `abilityModifierStatId`, `isProficient`, `fixedToHit`, `attackTypeRange`,
+  `isMartialArts`, `displayAsAttack`) whether or not the action is actually an
+  attack you roll to-hit for. `displayAsAttack: true` also shows up on damage
+  riders that ride along on an attack you already made (Sneak Attack, a
+  Cleric's Blessed Strikes) and on reactive non-attacks (Deflect Missiles'
+  own damage-reduction effect) - none of which have a to-hit roll of their
+  own. The actual "this is a rollable attack" signal is `attackTypeRange`
+  being non-null (`1` = melee, `2` = ranged) - confirmed against a real Monk
+  (Unarmed Strike and Flurry of Blows both correctly included, both melee), a
+  real Cleric (Blessed Strikes correctly excluded), and a real Rogue (Sneak
+  Attack correctly excluded). `sheet.attacks` filters on
+  `displayAsAttack and attackTypeRange is not None`, not `displayAsAttack`
+  alone. A no-dice action with a flat `value` (2024's base Unarmed Strike:
+  `dice: null, value: 1`, meaning "1 + ability mod", not a die roll) is a
+  complete spec, not missing data - summed straight into one number by
+  `sheet._format_damage` rather than left blank or misread as "0 damage."
+  `damageTypeId` itself is unmapped beyond `1` (Bludgeoning, confirmed from
+  the same Monk fixture) - D&D Beyond doesn't document the mapping anywhere,
+  and an unconfirmed id is left blank rather than guessed, since a wrong
+  damage type shown at the table is worse than no damage type shown.
 
 ## Never hardcode per class/race/feat - the character JSON always self-describes
 
@@ -166,6 +236,8 @@ generically, never adding a name-check or an external ruleset dataset:
 | "Magic Initiate spells are 1/long rest" | the spell's own `limitedUse` block in `spells.feat`/`spells.race` | `sheet.known_spells` |
 | "Half-Orc gets +2 STR" | any `type: "bonus"` modifier with `subType: "<ability>-score"` | `sheet.ability_scores` |
 | "This Warlock has a custom +6 AC item" | any character can attach a custom bonus via D&D Beyond's "Customize" panel, stored in `data['characterValues']` (opaque `typeId`, not class/race/feat-scoped at all) | `sheet.custom_adjustments` |
+| "Monks are proficient with shortswords" | any weapon with `isMonkWeapon: true`, if the character has an `isMartialArts: true` action anywhere | `sheet._has_martial_arts` |
+| "A Fighter's Second Wind isn't a real attack, but a Monk's Unarmed Strike is" | `attackTypeRange` non-null on the action, not `displayAsAttack` (which also flags damage riders like Sneak Attack) | `sheet.attacks` |
 
 **The rule going forward**: before adding any check that names a specific class,
 race, or feat, first look for the generic field the character JSON already uses

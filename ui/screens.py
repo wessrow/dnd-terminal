@@ -20,7 +20,7 @@ class CharacterSelectScreen(ModalScreen[str | None]):
         align: center middle;
     }
     #dialog {
-        width: 64;
+        width: 78;
         height: auto;
         border: round $primary;
         padding: 1 2;
@@ -48,9 +48,9 @@ class CharacterSelectScreen(ModalScreen[str | None]):
             yield Static(f"{icons.CHARACTER}  Select a Character", classes="title")
             if self.characters:
                 table = VimDataTable(id="character-list")
-                table.add_columns("Name", "Character ID")
+                table.add_columns("Name", "Class", "Character ID")
                 for entry in self.characters:
-                    table.add_row(entry["name"], entry["id"], key=entry["id"])
+                    table.add_row(entry["name"], entry.get("classes") or "-", entry["id"], key=entry["id"])
                 yield table
             yield Input(placeholder="...or paste a D&D Beyond character ID and press Enter", id="character-input")
 

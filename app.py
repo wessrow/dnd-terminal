@@ -31,7 +31,7 @@ from ui.widgets import PromptBar, ReferenceTable, VimDataTable
 # Widgets whose .loading spinner should show while the character fetch is in flight.
 LOADING_WIDGETS = (
     "#identity", "#abilities", "#saves", "#hp-line", "#hp-bar",
-    "#combat-rest", "#skills", "#spells", "#resources", "#inventory",
+    "#combat-rest", "#skills", "#attacks", "#spells", "#resources", "#inventory",
 )
 
 PROMPT_PLACEHOLDERS = {
@@ -72,7 +72,9 @@ class DndSheetApp(App):
         self.conditions_by_slug: dict[str, dict] = {}
         self.spells_by_key: dict[str, dict] = {}
         self.items_by_key: dict[str, dict] = {}
+        self.attacks_by_key: dict[str, dict] = {}
         self.resources_by_name: dict[str, dict] = {}
+        self.is_spellcaster: bool = True  # updated per-character in populate()
         self._condition_name_col = None
         self._condition_active_col = None
         self._spell_name_col = None
@@ -112,6 +114,9 @@ class DndSheetApp(App):
             with TabbedContent(id="main-tabs"):
                 with TabPane(f"{icons.SKILLS} Skills", id="tab-skills"):
                     yield ReferenceTable(id="skills")
+                with TabPane(f"{icons.ATTACKS} Attacks", id="tab-attacks"):
+                    yield VimDataTable(id="attacks")
+                    yield Static(id="attack-detail", classes="detail")
                 with TabPane(f"{icons.SPELLS} Spells", id="tab-spells"):
                     yield VimDataTable(id="spells")
                     yield Static(id="spell-detail", classes="detail")
@@ -146,6 +151,7 @@ class DndSheetApp(App):
         self.query_one("#abilities", DataTable).add_columns("Ability", "Score", "Mod")
         self.query_one("#saves", DataTable).add_columns("Save", "Mod", "")
         self.query_one("#skills", DataTable).add_columns("Skill", "Ability", "Mod", "")
+        self.query_one("#attacks", DataTable).add_columns("Attack", "Type", "To Hit", "Damage", "Range", "Source")
         spell_columns = self.query_one("#spells", DataTable).add_columns("Spell", "Level", "School", "Source", "Notes")
         self._spell_name_col, _, _, _, self._spell_notes_col = spell_columns
         self.query_one("#resources", DataTable).add_columns("Resource", "Uses", "Reset")
@@ -188,7 +194,7 @@ class DndSheetApp(App):
             return
         self.character_data = data
         self.combat = CombatTracker(data, self.state)
-        state_store.remember_character(self.character_id, data["name"])
+        state_store.remember_character(self.character_id, data["name"], sheet.class_summary(data))
         self.populate(data)
         for widget_id in LOADING_WIDGETS:
             self.query_one(widget_id).loading = False
@@ -402,10 +408,33 @@ class DndSheetApp(App):
                 sheet.format_modifier(skill["modifier"]),
                 formatting.proficiency_marker(skill["proficient"], skill["expertise"]),
             )
+        attacks_table = self.query_one("#attacks", DataTable)
+        attacks_table.clear()
+        self.attacks_by_key.clear()
+        for i, attack in enumerate(sheet.attacks(data)):
+            key = str(i)
+            self.attacks_by_key[key] = attack
+            attacks_table.add_row(
+                attack["name"],
+                attack["attack_type"],
+                formatting.attack_to_hit_cell(attack["to_hit"], attack["proficient"]),
+                f"{attack['damage']} {attack['damage_type']}".strip(),
+                attack["range"],
+                attack["source"],
+                key=key,
+            )
+        if self.attacks_by_key:
+            self.query_one("#attack-detail", Static).update(formatting.attack_detail(self.attacks_by_key["0"]))
+        else:
+            self.query_one("#attack-detail", Static).update("[dim]No weapon or feature attacks for this character.[/dim]")
+
         self.spells_by_key.clear()
         for i, spell in enumerate(sheet.known_spells(data)):
             self.spells_by_key[str(i)] = spell
         self.render_spells(rebuild=True)
+
+        self.is_spellcaster = sheet.is_spellcaster(data)
+        self._sync_spells_tab_visibility()
 
         self.render_resources()
 
@@ -710,15 +739,30 @@ class DndSheetApp(App):
         if widget_selector:
             self.query_one(widget_selector).focus()
 
+    def _visible_tab_ids(self) -> list[str]:
+        """TAB_IDS minus Spells for a character with no spellcasting at all - a
+        pure martial has nothing to show there, so it's hidden rather than left
+        as a permanently empty pane (see _sync_spells_tab_visibility)."""
+        return [t for t in TAB_IDS if t != "tab-spells" or self.is_spellcaster]
+
+    def _sync_spells_tab_visibility(self) -> None:
+        tabs = self.query_one(TabbedContent)
+        if self.is_spellcaster:
+            tabs.show_tab("tab-spells")
+        else:
+            tabs.hide_tab("tab-spells")  # Tabs.hide() moves focus off it automatically if active
+
     def action_next_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
-        idx = TAB_IDS.index(tabs.active)
-        self.goto_tab(TAB_IDS[(idx + 1) % len(TAB_IDS)])
+        visible = self._visible_tab_ids()
+        idx = visible.index(tabs.active)
+        self.goto_tab(visible[(idx + 1) % len(visible)])
 
     def action_prev_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
-        idx = TAB_IDS.index(tabs.active)
-        self.goto_tab(TAB_IDS[(idx - 1) % len(TAB_IDS)])
+        visible = self._visible_tab_ids()
+        idx = visible.index(tabs.active)
+        self.goto_tab(visible[(idx - 1) % len(visible)])
 
     # ------------------------------------------------------------------ #
     # Table events
@@ -733,6 +777,8 @@ class DndSheetApp(App):
             self.query_one("#spell-detail", Static).update(formatting.spell_detail(spell, charge))
         elif table_id == "inventory" and key in self.items_by_key:
             self.query_one("#item-detail", Static).update(formatting.item_detail(self.items_by_key[key]))
+        elif table_id == "attacks" and key in self.attacks_by_key:
+            self.query_one("#attack-detail", Static).update(formatting.attack_detail(self.attacks_by_key[key]))
         elif table_id == "conditions" and key in self.conditions_by_slug:
             self.query_one("#condition-detail", Static).update(self.conditions_by_slug[key]["desc"])
         elif table_id == "resources" and key in self.resources_by_name:

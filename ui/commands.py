@@ -46,6 +46,8 @@ def list_commands(app) -> list[tuple[str, callable]]:
             commands.append((f"{icons.RESOURCES}  Use {name}", lambda n=name: app.use_resource(n)))
             commands.append((f"{icons.RESOURCES}  Restore {name}", lambda n=name: app.restore_resource(n)))
     for tab_id in TAB_IDS:
+        if tab_id == "tab-spells" and not app.is_spellcaster:
+            continue  # hidden tab (see DndSheetApp._sync_spells_tab_visibility) - nothing to jump to
         commands.append((f"Go to {TAB_LABELS[tab_id]} tab", lambda t=tab_id: app.goto_tab(t)))
     for theme_name in app.available_themes:
         commands.append((f"{icons.THEME}  Theme: {theme_name}", lambda t=theme_name: setattr(app, "theme", t)))

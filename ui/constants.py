@@ -1,10 +1,11 @@
 """Shared constants for tab navigation, kept separate from app.py/commands.py so
 neither has to import the other just to see these."""
 
-TAB_IDS = ["tab-skills", "tab-spells", "tab-resources", "tab-inventory", "tab-conditions"]
+TAB_IDS = ["tab-skills", "tab-attacks", "tab-spells", "tab-resources", "tab-inventory", "tab-conditions"]
 
 TAB_LABELS = {
     "tab-skills": "Skills",
+    "tab-attacks": "Attacks",
     "tab-spells": "Spells",
     "tab-resources": "Resources",
     "tab-inventory": "Inventory",
@@ -15,6 +16,7 @@ TAB_LABELS = {
 # included - a table that never gets focus can't be scrolled with the keyboard.
 TAB_PRIMARY_WIDGET = {
     "tab-skills": "#skills",
+    "tab-attacks": "#attacks",
     "tab-spells": "#spells",
     "tab-resources": "#resources",
     "tab-inventory": "#inventory",
@@ -24,6 +26,7 @@ TAB_PRIMARY_WIDGET = {
 # Every tab's table is searchable with "/", including the read-only ones.
 SEARCHABLE_TABS = {
     "tab-skills": "#skills",
+    "tab-attacks": "#attacks",
     "tab-spells": "#spells",
     "tab-resources": "#resources",
     "tab-inventory": "#inventory",

@@ -8,9 +8,10 @@ import pytest
 from app import DndSheetApp
 from clients import ddb_client, open5e_client
 from storage import state_store
-from textual.widgets import DataTable
+from textual.widgets import DataTable, TabbedContent
+from ui.commands import list_commands
 
-from .fixtures import barbarian_character, multiclass_warlock_sorcerer_character, wizard_character
+from .fixtures import barbarian_character, fighter_character, multiclass_warlock_sorcerer_character, wizard_character
 
 FAKE_CONDITIONS = [{"name": "Prone", "slug": "prone", "desc": "You are prone."}]
 
@@ -84,6 +85,45 @@ async def test_going_to_skills_tab_focuses_it_so_it_can_be_scrolled(monkeypatch,
         skills = app.query_one("#skills", DataTable)
         assert app.focused is skills
         assert skills.can_focus
+
+
+@pytest.mark.asyncio
+async def test_spells_tab_is_hidden_for_a_pure_martial(monkeypatch, tmp_path):
+    """A Fighter/Rogue/Monk-style character with no spellcasting at all gets no
+    Spells tab, rather than an always-empty pane - see sheet.is_spellcaster."""
+    app = _make_app(monkeypatch, tmp_path, fighter_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        tabs = app.query_one(TabbedContent)
+        assert tabs.get_tab("tab-spells").has_class("-hidden")
+        assert "Go to Spells tab" not in [text for text, _ in list_commands(app)]
+
+        # cycling with ] must skip straight past the hidden tab
+        app.action_next_tab()
+        await pilot.pause()
+        assert tabs.active != "tab-spells"
+
+
+@pytest.mark.asyncio
+async def test_spells_tab_reappears_when_switching_to_a_caster(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, fighter_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        tabs = app.query_one(TabbedContent)
+        assert tabs.get_tab("tab-spells").has_class("-hidden")
+
+        monkeypatch.setattr(ddb_client, "fetch_character", lambda character_id: wizard_character())
+        app.on_character_chosen("other-test-id")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert not tabs.get_tab("tab-spells").has_class("-hidden")
 
 
 @pytest.mark.asyncio
