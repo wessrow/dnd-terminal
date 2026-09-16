@@ -344,3 +344,20 @@ def test_familiar_special_forms_ignores_unrelated_monster_tags():
         },
     )
     assert sheet.familiar_special_forms(data) == []
+
+
+def test_familiar_forms_excludes_expanded_list_without_the_granting_feature():
+    """Find Familiar known from some other source (e.g. the Magic Initiate
+    feat, or a Wizard's own spell list) - with no Pact of the Chain or
+    equivalent - must show only the standard 11 forms. The expanded list is
+    never assumed just because the character happens to be a Warlock; it's
+    only ever read from a feature that actually grants it (see
+    familiar_special_forms)."""
+    data = base_character(
+        spells={
+            "feat": [granted_spell("Find Familiar", 1, "Conjuration", component_id=7)],
+            "race": [], "background": [], "class": [], "item": [],
+        },
+    )
+    assert sheet.has_familiar(data) is True
+    assert sheet.familiar_forms(data) == sheet.STANDARD_FAMILIAR_FORMS

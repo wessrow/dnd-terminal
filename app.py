@@ -519,14 +519,26 @@ class DndSheetApp(App):
 
     def apply_familiar_damage(self, amount: int) -> None:
         tab = self.query_one(FamiliarTab)
+        form = self.state.get("familiar_form")
         result = familiar.FamiliarTracker(tab.monster, self.state).apply_damage(amount)
         if result is None:
             self.notify("No familiar HP to track (none summoned, or no stat block found).", severity="warning")
             return
         state_store.save(self.character_id, self.state)
-        tab.refresh_data()
         current, max_hp = result
-        self.notify(f"{icons.DAMAGE} Familiar took {amount} damage - {current}/{max_hp} HP")
+        if self.state.get("familiar_form") is None:
+            # apply_damage() already despawned it (dropped to 0 HP) - reload
+            # the tab (form=None) rather than refresh_data(), since the tab's
+            # cached monster is now stale and would otherwise still render
+            # against it.
+            self.run_worker(tab.load(None), exclusive=True, group="familiar")
+            self.notify(
+                f"{icons.DEATH} {form} dropped to 0 HP and disappeared! Re-cast Find Familiar to summon it again.",
+                severity="warning",
+            )
+        else:
+            tab.refresh_data()
+            self.notify(f"{icons.DAMAGE} Familiar took {amount} damage - {current}/{max_hp} HP")
 
     def apply_familiar_heal(self, amount: int) -> None:
         tab = self.query_one(FamiliarTab)

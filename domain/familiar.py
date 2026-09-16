@@ -95,12 +95,23 @@ class FamiliarTracker:
         return (max_hp if current is None else current), max_hp
 
     def apply_damage(self, amount: int) -> tuple[int, int] | None:
+        """Returns (current, max) after damage, or None if there's nothing to
+        track. Dropping to 0 HP despawns the familiar immediately - per the
+        actual Find Familiar rules text ("When the familiar drops to 0 Hit
+        Points, it disappears. It reappears after you cast this spell
+        again."), not a house rule - so this also clears `familiar_form`/
+        `familiar_hp` via dismiss(), the same as the player explicitly
+        dismissing it. Callers can tell this happened because
+        `state["familiar_form"]` is None afterward."""
         effective = self.effective_hp()
         if not effective:
             return None
         current, max_hp = effective
         current = max(0, current - amount)
-        self.state["familiar_hp"] = current
+        if current == 0:
+            self.dismiss()
+        else:
+            self.state["familiar_hp"] = current
         return current, max_hp
 
     def apply_heal(self, amount: int) -> tuple[int, int] | None:

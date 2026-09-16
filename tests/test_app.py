@@ -203,6 +203,36 @@ async def test_summoning_a_familiar_loads_its_stat_block_and_tracks_hp(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_familiar_despawns_and_notifies_when_dropped_to_zero_hp(monkeypatch, tmp_path):
+    """RAW: a familiar disappears the moment it drops to 0 HP - this must
+    clear the tracked form (not just clamp at 0/10) and tell the player,
+    distinctly from an ordinary damage notification."""
+    app = _make_app(monkeypatch, tmp_path, warlock_familiar_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        app.summon_familiar("Imp")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        app.apply_familiar_damage(100)  # Imp has 10 HP - well past lethal
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app.state["familiar_form"] is None
+        assert app.state["familiar_hp"] is None
+        assert app.query_one(FamiliarTab).monster is None
+        header_text = str(app.query_one("#familiar-header").render())
+        assert "No familiar summoned" in header_text
+
+        despawn_notifications = [n for n in app._notifications if "disappeared" in n.message]
+        assert len(despawn_notifications) == 1
+        assert despawn_notifications[0].severity == "warning"
+
+
+@pytest.mark.asyncio
 async def test_multiclass_shows_both_pact_magic_and_regular_slots(monkeypatch, tmp_path):
     app = _make_app(monkeypatch, tmp_path, multiclass_warlock_sorcerer_character())
     async with app.run_test(size=(170, 50)) as pilot:

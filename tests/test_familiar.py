@@ -66,15 +66,29 @@ def test_familiar_tracker_no_monster_means_no_hp_to_track():
     assert tracker.apply_heal(5) is None
 
 
-def test_familiar_tracker_damage_and_heal_clamp_to_bounds():
+def test_familiar_tracker_heal_clamps_at_max():
     monster = familiar.summarize_monster(RAW_IMP)
     state = default_state()
     tracker = familiar.FamiliarTracker(monster, state)
 
     assert tracker.apply_damage(4) == (6, 10)
-    assert tracker.apply_damage(100) == (0, 10)  # clamped at 0, not negative
-    assert tracker.apply_heal(3) == (3, 10)
+    assert tracker.apply_heal(3) == (9, 10)
     assert tracker.apply_heal(100) == (10, 10)  # clamped at max, not overhealed
+
+
+def test_familiar_tracker_damage_to_zero_clamps_and_despawns():
+    """RAW (Find Familiar's own text): "When the familiar drops to 0 Hit
+    Points, it disappears." - dropping to 0 must clear familiar_form/
+    familiar_hp the same as an explicit dismiss(), not just clamp at 0."""
+    monster = familiar.summarize_monster(RAW_IMP)
+    state = default_state()
+    state["familiar_form"] = "Imp"
+    tracker = familiar.FamiliarTracker(monster, state)
+
+    assert tracker.apply_damage(4) == (6, 10)
+    assert tracker.apply_damage(100) == (0, 10)  # clamped at 0, not negative
+    assert state["familiar_form"] is None
+    assert state["familiar_hp"] is None
 
 
 def test_familiar_tracker_summon_resets_local_hp_to_full():
