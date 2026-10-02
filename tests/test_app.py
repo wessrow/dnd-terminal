@@ -309,3 +309,20 @@ async def test_switching_characters_does_not_leak_state_between_them(monkeypatch
 
         current, max_hp, _ = app.combat.effective_hp()
         assert current == max_hp  # fresh character, full HP, no leftover damage
+
+
+@pytest.mark.asyncio
+async def test_gg_and_G_jump_to_table_ends(monkeypatch, tmp_path):
+    app = _make_app(monkeypatch, tmp_path, wizard_character())
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        table = app.query_one("#skills", DataTable)
+        table.focus()
+        await pilot.press("G")
+        assert table.cursor_row == table.row_count - 1
+        await pilot.press("g")
+        assert table.cursor_row == table.row_count - 1  # one "g" alone does nothing
+        await pilot.press("g")
+        assert table.cursor_row == 0

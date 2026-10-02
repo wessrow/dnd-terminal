@@ -391,6 +391,7 @@ through the command palette (`:`) rather than growing the bindings list. No
 duplicate bindings for the same action (e.g. there's no `ctrl+p` alongside `:`).
 
 - `hjkl` - move within the focused table (also arrow keys)
+- `gg` / `G` - jump to the top / bottom of the focused table
 - `[` / `]` - previous/next tab (auto-focuses that tab's table)
 - `/` - search the active tab's table (typed inline at the bottom, vim-style -
   see PromptBar below), jumps to first match

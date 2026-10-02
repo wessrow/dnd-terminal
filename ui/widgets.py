@@ -1,6 +1,8 @@
 """Custom DataTable variants, plus PromptBar - the single-line, non-modal input used
 for search/damage/heal/temp-HP so those don't cover the screen like a full dialog."""
 
+import time
+
 from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import DataTable, Input
@@ -17,11 +19,32 @@ class VimDataTable(DataTable):
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("l", "cursor_right", "Right", show=False),
+        Binding("g", "go_top", "Top", show=False),
+        Binding("G", "go_bottom", "Bottom", show=False),
     ]
+
+    # vim's "gg" is two presses of the same key; a second "g" within this many
+    # seconds of the first jumps to the top, otherwise it just re-arms.
+    GG_TIMEOUT = 1.0
 
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("cursor_type", "row")
         super().__init__(*args, **kwargs)
+        self._last_g = 0.0
+
+    def action_go_top(self) -> None:
+        now = time.monotonic()
+        if now - self._last_g <= self.GG_TIMEOUT:
+            self._last_g = 0.0
+            if self.row_count:
+                self.move_cursor(row=0)
+        else:
+            self._last_g = now
+
+    def action_go_bottom(self) -> None:
+        self._last_g = 0.0
+        if self.row_count:
+            self.move_cursor(row=self.row_count - 1)
 
 
 class PromptBar(Input, can_focus=False):
