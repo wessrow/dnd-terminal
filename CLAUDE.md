@@ -198,6 +198,18 @@ project root regardless of which package `state_store.py` lives in - don't
   either), and its Notes column shows the live "X/Y left (Long Rest)" count
   instead of a static "1/long rest" string that would go stale the moment it's
   used once.
+- **Spell attack bonus / save DC / damage are derivable, not stored.** Attack =
+  proficiency + casting-ability mod; DC = 8 + the same. Casting ability is the
+  spell entry's own `spellCastingAbilityId` (feat/race grants) else the owning
+  class's (`classSpells[].characterClassId` -> class `spellCastingAbilityId`).
+  Damage dice are in the spell definition's own `damage` modifier. A
+  spell-specific bonus like Agonizing Blast is a character modifier whose `type`
+  is the spell name's slug (`eldritch-blast`) with `subType: "bonus-damage"` +
+  a `statId` - matched generically by slug, not by invocation name. Eldritch
+  Blast-style extra beams are `atHigherLevels` entries with `details: "Beams"`;
+  other `scaleType: "characterlevel"` cantrips gain dice at levels 5/11/17.
+  See `sheet._spell_roll_fields` (the `spell-attacks`/`spell-save-dc` bonus
+  subtypes there are unconfirmed against real data).
 - **Special senses** (Darkvision, Blindsight, Tremorsense, Truesight) are a
   `type: "set-base"` modifier with `subType` matching the sense's name, same
   scattered pattern as everything else - `sheet.senses`. **Passive skill scores**

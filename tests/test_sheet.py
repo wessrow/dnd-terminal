@@ -361,3 +361,50 @@ def test_familiar_forms_excludes_expanded_list_without_the_granting_feature():
     )
     assert sheet.has_familiar(data) is True
     assert sheet.familiar_forms(data) == sheet.STANDARD_FAMILIAR_FORMS
+
+
+def _warlock_with_eldritch_blast(level: int, agonizing: bool) -> dict:
+    from .fixtures import base_character, class_entry
+
+    blast = {
+        "name": "Eldritch Blast", "level": 0, "school": "Evocation", "description": "",
+        "requiresAttackRoll": True, "scaleType": "characterlevel",
+        "atHigherLevels": {"higherLevelDefinitions": [
+            {"level": 5, "value": 1, "details": "Beams"}, {"level": 11, "value": 2, "details": "Beams"},
+        ]},
+        "modifiers": [{"type": "damage", "subType": "force", "friendlySubtypeName": "Force",
+                       "die": {"diceCount": 1, "diceValue": 10, "diceString": "1d10"}}],
+    }
+    fire_bolt = {**blast, "name": "Fire Bolt", "atHigherLevels": {"higherLevelDefinitions": []}}
+    cls = class_entry("Warlock", level)
+    cls["definition"]["spellCastingAbilityId"] = 6
+    data = base_character(
+        stats=[{"id": i, "value": 16 if i == 6 else 10} for i in range(1, 7)],
+        classes=[cls],
+        classSpells=[{"spells": [{"definition": blast}, {"definition": fire_bolt}]}],
+    )
+    if agonizing:
+        data["modifiers"]["class"].append(
+            {"type": "eldritch-blast", "subType": "bonus-damage", "statId": 6, "value": None, "fixedValue": None}
+        )
+    return data
+
+
+def test_spell_attack_bonus_and_agonizing_blast_damage():
+    from domain import sheet
+
+    spells = {s["name"]: s for s in sheet.known_spells(_warlock_with_eldritch_blast(5, agonizing=True))}
+    blast = spells["Eldritch Blast"]
+    assert blast["attack_bonus"] == 6  # prof 3 + CHA 16 (+3)
+    assert blast["damage"] == "1d10+3"
+    assert blast["beams"] == 2
+    # the bonus is keyed to the spell's name, so it must not leak onto other spells,
+    # and a plain cantrip's dice scale with character level instead of adding beams
+    assert spells["Fire Bolt"]["damage"] == "2d10"
+
+
+def test_spell_damage_without_agonizing_blast_has_no_bonus():
+    from domain import sheet
+
+    blast = next(s for s in sheet.known_spells(_warlock_with_eldritch_blast(1, agonizing=False)) if s["name"] == "Eldritch Blast")
+    assert blast["damage"] == "1d10" and blast["beams"] == 1

@@ -136,3 +136,19 @@ def party_member_card(member: dict, summary: dict | None) -> str:
         f"{icons.HEART} [{hp_style}]{hp}[/{hp_style}]   {icons.SHIELD} {summary['ac']}\n"
         f"Passive Perc. {summary['passive_perception']}   Speed {summary['speed']}"
     )
+
+
+def spell_roll_cell(spell: dict) -> str:
+    """Attack bonus or save DC, e.g. "+6" or "DC 14 WIS"; blank if neither applies."""
+    if spell["attack_bonus"] is not None:
+        return sheet.format_modifier(spell["attack_bonus"])
+    if spell["save_dc"] is not None:
+        return f"DC {spell['save_dc']} {spell['save_ability']}".strip()
+    return ""
+
+
+def spell_damage_cell(spell: dict) -> str:
+    if not spell["damage"]:
+        return ""
+    beams = f"{spell['beams']}x " if spell["beams"] > 1 else ""
+    return f"{beams}{spell['damage']} {spell['damage_type']}".strip()

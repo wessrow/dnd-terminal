@@ -22,8 +22,10 @@ class SpellsTab(TabPane):
         yield Static(id="spell-detail", classes="detail")
 
     def on_mount(self) -> None:
-        columns = self.query_one("#spells", DataTable).add_columns("Spell", "Level", "School", "Source", "Notes")
-        self._name_col, _, _, _, self._notes_col = columns
+        columns = self.query_one("#spells", DataTable).add_columns(
+            "Spell", "Level", "Hit/DC", "Damage", "School", "Source", "Notes"
+        )
+        self._name_col, *_, self._notes_col = columns
 
     def populate(self, data: dict) -> None:
         self.spells_by_key.clear()
@@ -45,6 +47,8 @@ class SpellsTab(TabPane):
                 table.add_row(
                     formatting.spell_name_cell(spell["name"], combat.can_cast(spell)),
                     sheet.format_spell_level(spell["level"]),
+                    formatting.spell_roll_cell(spell),
+                    formatting.spell_damage_cell(spell),
                     spell["school"],
                     spell["source"],
                     formatting.spell_notes(spell, charge),

@@ -395,6 +395,104 @@ def format_spell_level(level: int) -> str:
     return {1: "1st", 2: "2nd", 3: "3rd"}.get(level, f"{level}th")
 
 
+def _spell_ability_id(data: dict, spell_ability_id: int | None, class_id: int | None = None) -> int | None:
+    """Casting ability for a spell: the spell entry's own `spellCastingAbilityId`
+    (feat/race grants, e.g. Magic Initiate) wins; otherwise the owning class's
+    (or its subclass's - Eldritch Knight sets it there), falling back to the
+    first class that has one."""
+    if spell_ability_id:
+        return spell_ability_id
+    fallback = None
+    for cls in data["classes"]:
+        ability_id = (cls.get("subclassDefinition") or {}).get("spellCastingAbilityId") or cls["definition"].get(
+            "spellCastingAbilityId"
+        )
+        if not ability_id:
+            continue
+        if class_id is not None and cls.get("id") == class_id:
+            return ability_id
+        fallback = fallback or ability_id
+    return fallback
+
+
+def _ability_for(data: dict, spell_entry: dict, class_id: int | None = None) -> int | None:
+    return _spell_ability_id(data, spell_entry.get("spellCastingAbilityId"), class_id)
+
+
+def _flat_modifier_total(data: dict, mod_type: str, sub_type: str) -> int:
+    return sum(
+        (m.get("value") or m.get("fixedValue") or 0)
+        for category in data["modifiers"].values()
+        for m in category or []
+        if m.get("type") == mod_type and m.get("subType") == sub_type
+    )
+
+
+def _spell_roll_fields(data: dict, definition: dict, ability_id: int | None) -> dict:
+    """The numbers you actually roll for a spell: attack bonus / save DC and
+    per-hit damage, folding in the casting ability and any bonus the character
+    has picked up (Agonizing Blast etc).
+
+    - Attack = proficiency + casting ability mod. Save DC = 8 + the same.
+    - Damage dice come from the spell definition's own `damage` modifier(s).
+    - A spell-specific damage bonus (Agonizing Blast) is a modifier whose `type`
+      is the spell name's slug (`eldritch-blast`) with `subType: "bonus-damage"`
+      and a `statId` (add that ability's modifier) or a flat value - matched
+      on the spell's name slug, not hardcoded to any invocation.
+    - Cantrips with `scaleType: "characterlevel"` gain dice at levels 5/11/17
+      (5e game vocabulary) - unless the spell instead lists extra "Beams" in its
+      `atHigherLevels` (Eldritch Blast), which multiplies the attack count.
+    - Damage is shown at the spell's base level; upcasting isn't applied.
+    - The `spell-attacks`/`spell-save-dc` bonus subtypes are unconfirmed against
+      real data (no sample character has one) - harmless if wrong, it just adds 0.
+    """
+    fields = {"attack_bonus": None, "save_dc": None, "save_ability": None, "damage": "", "damage_type": "", "beams": 1}
+    ability_mod = None
+    if ability_id:
+        ability_mod = ability_modifier(ability_scores(data)[ability_id])
+    prof = proficiency_bonus(data)
+
+    if definition.get("requiresAttackRoll") and ability_mod is not None:
+        fields["attack_bonus"] = prof + ability_mod + _flat_modifier_total(data, "bonus", "spell-attacks")
+    if definition.get("requiresSavingThrow") and ability_mod is not None:
+        fields["save_dc"] = 8 + prof + ability_mod + _flat_modifier_total(data, "bonus", "spell-save-dc")
+        fields["save_ability"] = ABILITY_ABBR.get(definition.get("saveDcAbilityId"), "")
+
+    damage_mods = [m for m in definition.get("modifiers") or [] if m.get("type") == "damage" and m.get("die")]
+    if not damage_mods:
+        return fields
+    level = total_level(data)
+    first = damage_mods[0]
+    dice_count = first["die"].get("diceCount") or 1
+    die_value = first["die"].get("diceValue")
+    beams_defs = [
+        d for d in definition.get("atHigherLevels", {}).get("higherLevelDefinitions") or []
+        if (d.get("details") or "").lower() == "beams" and d["level"] <= level
+    ]
+    if beams_defs:
+        fields["beams"] = 1 + max(d["value"] for d in beams_defs)
+    elif definition.get("scaleType") == "characterlevel" and definition.get("level") == 0:
+        dice_count *= 1 + sum(level >= threshold for threshold in (5, 11, 17))
+    damage = f"{dice_count}d{die_value}" if die_value else first["die"].get("diceString", "")
+    for extra in damage_mods[1:]:
+        damage += f" + {extra['die']['diceString']}"
+
+    slug = definition["name"].lower().replace(" ", "-")
+    bonus = 0
+    for category in data["modifiers"].values():
+        for m in category or []:
+            if m.get("type") == slug and m.get("subType") == "bonus-damage":
+                if m.get("statId"):
+                    bonus += ability_modifier(ability_scores(data)[m["statId"]])
+                else:
+                    bonus += m.get("value") or m.get("fixedValue") or 0
+    if bonus:
+        damage += format_modifier(bonus)
+    fields["damage"] = damage
+    fields["damage_type"] = (first.get("friendlySubtypeName") or first.get("subType") or "").title()
+    return fields
+
+
 def known_spells(data: dict) -> list[dict]:
     """Returns one dict per spell the character actually has access to: class
     spells the player chose, plus anything *granted* by a feat, race, or a class
@@ -423,8 +521,10 @@ def known_spells(data: dict) -> list[dict]:
     for group in data["classSpells"]:
         for sp in group["spells"]:
             d = sp["definition"]
+            ability_id = _ability_for(data, sp, group.get("characterClassId"))
             spells.append(
                 {
+                    **_spell_roll_fields(data, d, ability_id),
                     "name": d["name"],
                     "level": d["level"],
                     "school": d.get("school", ""),
@@ -448,6 +548,7 @@ def known_spells(data: dict) -> list[dict]:
             entry = granted.setdefault(
                 key,
                 {
+                    **_spell_roll_fields(data, d, _ability_for(data, sp)),
                     "name": d["name"],
                     "level": d["level"],
                     "school": d.get("school", ""),
