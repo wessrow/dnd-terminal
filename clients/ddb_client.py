@@ -26,15 +26,35 @@ def get_character_id() -> str | None:
 
 
 def fetch_character(character_id: str) -> dict:
-    response = requests.get(
-        CHARACTER_SERVICE_URL.format(id=character_id),
-        headers=_HEADERS,
-        timeout=10,
-    )
-    payload = response.json()
+    try:
+        response = requests.get(
+            CHARACTER_SERVICE_URL.format(id=character_id),
+            headers=_HEADERS,
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise CharacterFetchError(f"Could not reach D&D Beyond to fetch character {character_id}: {exc}") from exc
+
+    # Error responses (404 especially) aren't guaranteed to be JSON, or to
+    # carry the usual {"data": {"serverMessage": ...}} shape.
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if response.status_code == 404:
+        raise CharacterFetchError(
+            f"Character {character_id} not found (404). Check the ID - and note "
+            "that premade/sample characters aren't served by this API."
+        )
 
     if response.status_code != 200 or not payload.get("success"):
-        server_message = payload.get("data", {}).get("serverMessage", "unknown error")
+        data = payload.get("data")
+        server_message = (
+            data.get("serverMessage") if isinstance(data, dict) else None
+        ) or payload.get("message") or f"HTTP {response.status_code}"
         raise CharacterFetchError(
             f"Failed to fetch character {character_id}: {server_message}\n"
             "Check that the character's sharing visibility is set to Public "
