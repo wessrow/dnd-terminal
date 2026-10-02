@@ -35,3 +35,4 @@ INITIATIVE = ""  # nf-fa-flag
 SPEED = ""  # nf-fa-rocket
 DEATH = ""  # nf-fa-medkit
 DANGER = ""  # nf-fa-bomb
+PARTY = ""  # nf-fa-users

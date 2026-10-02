@@ -7,6 +7,11 @@ Screen {
     padding: 1;
 }
 
+#party-sidebar {
+    width: 38;
+    padding: 1;
+}
+
 .panel {
     border: round $primary;
     padding: 0 1;

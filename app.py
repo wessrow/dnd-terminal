@@ -7,7 +7,7 @@ from textual.widgets import DataTable, Footer, Header, Input, OptionList, Progre
 from textual.widgets.option_list import Option
 
 from clients import ddb_client
-from domain import familiar, sheet
+from domain import familiar, party, sheet
 from domain.combat import CombatTracker
 from storage import state_store
 from ui import formatting, icons
@@ -113,6 +113,9 @@ class DndSheetApp(App):
                 yield ResourcesTab()
                 yield InventoryTab()
                 yield ConditionsTab()
+            with VerticalScroll(id="party-sidebar"):
+                with Vertical(id="party-panel", classes="panel"):
+                    yield Static(id="party-list")
         command_list = OptionList(id="command-list")
         command_list.can_focus = False  # see PromptBar's docstring re: AUTO_FOCUS
         with Vertical(id="palette"):
@@ -130,6 +133,7 @@ class DndSheetApp(App):
         self.query_one("#abilities-panel").border_title = f"{icons.ABILITIES} Ability Scores"
         self.query_one("#saves-panel").border_title = f"{icons.SAVES} Saving Throws"
         self.query_one("#combat-panel").border_title = f"{icons.COMBAT} Combat"
+        self.query_one("#party-sidebar").display = False  # shown only if the character has campaign colleagues
 
         self.query_one("#abilities", DataTable).add_columns("Ability", "Score", "Mod")
         self.query_one("#saves", DataTable).add_columns("Save", "Mod", "")
@@ -173,9 +177,35 @@ class DndSheetApp(App):
         self.populate(data)
         for widget_id in LOADING_WIDGETS:
             self.query_one(widget_id).loading = False
+        self.run_worker(self.load_party(data), exclusive=True, group="party")
         self.run_worker(
             self.query_one(FamiliarTab).load(self.state.get("familiar_form")), exclusive=True, group="familiar"
         )
+
+    async def load_party(self, data: dict) -> None:
+        """Fetch the other characters in this character's campaign and show them
+        in the right-hand party panel. The panel stays hidden when there are none.
+        Members whose sheet isn't Public (or otherwise fails to fetch) are listed
+        by name only."""
+        panel = self.query_one("#party-sidebar")
+        members = party.party_members(data)
+        if not members:
+            panel.display = False
+            return
+
+        async def fetch(member: dict) -> dict | None:
+            try:
+                return party.summarize_member(await asyncio.to_thread(ddb_client.fetch_character, member["id"]))
+            except (ddb_client.CharacterFetchError, KeyError, TypeError, ValueError):
+                return None
+
+        summaries = await asyncio.gather(*(fetch(m) for m in members))
+        title = party.campaign_name(data) or "Party"
+        self.query_one("#party-panel").border_title = f"{icons.PARTY} {title}"
+        self.query_one("#party-list", Static).update(
+            "\n\n".join(formatting.party_member_card(m, s) for m, s in zip(members, summaries))
+        )
+        panel.display = True
 
     def action_refresh(self) -> None:
         if self.character_id is None:

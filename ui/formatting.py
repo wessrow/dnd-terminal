@@ -1,5 +1,6 @@
 """Rich-markup/Text formatting helpers - pure presentation, no app state."""
 
+from rich.markup import escape
 from rich.text import Text
 
 from domain import sheet
@@ -114,3 +115,24 @@ def resource_detail(resource: dict) -> str:
     remaining = resource["available"] - resource["used"]
     header = f"[bold]{resource['name']}[/bold]  |  {remaining}/{resource['available']} left  |  Resets: {resource['reset_type']}"
     return f"{header}\n\n{resource['description'] or '(no description)'}"
+
+
+def party_member_card(member: dict, summary: dict | None) -> str:
+    """Markup for one party member. `member` is from domain.party.party_members;
+    `summary` is domain.party.summarize_member's result, or None when their
+    sheet couldn't be fetched (not Public)."""
+    if summary is None:
+        return (
+            f"[bold]{escape(member['name'])}[/bold]\n"
+            f"[dim]{escape(member['username'])} - sheet not public[/dim]"
+        )
+    hp = f"{summary['hp']}/{summary['max_hp']}"
+    if summary["temp_hp"]:
+        hp += f" (+{summary['temp_hp']})"
+    hp_style = "red" if summary["hp"] * 4 <= summary["max_hp"] else "green"
+    return (
+        f"[bold]{escape(summary['name'])}[/bold]\n"
+        f"[dim]{escape(summary['classes'])}[/dim]\n"
+        f"{icons.HEART} [{hp_style}]{hp}[/{hp_style}]   {icons.SHIELD} {summary['ac']}\n"
+        f"Passive Perc. {summary['passive_perception']}   Speed {summary['speed']}"
+    )
