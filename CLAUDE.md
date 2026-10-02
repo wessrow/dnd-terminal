@@ -4,6 +4,13 @@ A personal terminal UI (Textual) for viewing a D&D Beyond character sheet and
 tracking combat state (HP, spell slots, conditions) during a session. Single
 character-focused, single user, no server component.
 
+## Commit workflow
+
+When fixing things, **commit frequently** - one small commit per discrete fix
+(a bug, a handled error case, a regression test), not one big commit at the end
+of a session. Keep each commit focused and revertable on its own, and run
+`uv run pytest` before committing.
+
 ## Running it
 
 ```
