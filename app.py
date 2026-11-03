@@ -439,6 +439,22 @@ class DndSheetApp(App):
         self.render_combat_panel()
         self.notify(f"{icons.INSPIRATION} Heroic Inspiration: {'Yes' if new_value else 'No'}")
 
+    def toggle_rage(self) -> None:
+        if not self.combat:
+            return
+        raging = self.combat.toggle_rage()
+        if raging is None:
+            self.notify("Can't enter Rage - no uses left (or no Rage feature)", severity="warning")
+            return
+        state_store.save(self.character_id, self.state)
+        self.render_combat_panel()
+        self.query_one(AttacksTab).refresh_data()
+        self.query_one(ResourcesTab).refresh_data()
+        if raging:
+            self.notify(f"{icons.RESOURCES} Raging! +{self.combat.rage_damage_bonus()} damage on Strength attacks")
+        else:
+            self.notify(f"{icons.RESOURCES} Rage ended")
+
     def use_pact_slot(self) -> None:
         self.combat.use_pact_slot()
         state_store.save(self.character_id, self.state)
@@ -500,6 +516,7 @@ class DndSheetApp(App):
         self.render_combat_panel()
         self.query_one(ResourcesTab).refresh_data()
         self.query_one(SpellsTab).refresh_data()
+        self.query_one(AttacksTab).refresh_data()
         self.notify(f"{icons.LONG_REST} Long rest complete - HP, spell slots, and resources restored (tracked locally)")
 
     def do_short_rest(self) -> None:
@@ -510,6 +527,7 @@ class DndSheetApp(App):
             self.render_combat_panel()
             self.query_one(ResourcesTab).refresh_data()
             self.query_one(SpellsTab).refresh_data()
+            self.query_one(AttacksTab).refresh_data()
             self.notify(f"{icons.SHORT_REST} Short rest complete - resources restored (tracked locally)")
         else:
             self.notify("Nothing to restore on a short rest for this character.")
@@ -523,6 +541,7 @@ class DndSheetApp(App):
         self.combat.reset_to_baseline()
         state_store.save(self.character_id, self.state)
         self.render_combat_panel()
+        self.query_one(AttacksTab).refresh_data()
         self.query_one(ResourcesTab).refresh_data()
         self.query_one(SpellsTab).refresh_data()
         self.query_one(ConditionsTab).refresh_data()
@@ -634,6 +653,11 @@ class DndSheetApp(App):
         ]
         conditions_line = f"[bold red]{', '.join(active_conditions)}[/bold red]" if active_conditions else "None"
         inspiration = self.combat.effective_inspiration()
+        if self.combat.is_raging():
+            sections.append(
+                f"[bold red]{icons.RESOURCES} RAGING[/bold red]  +{self.combat.rage_damage_bonus()} dmg, "
+                "resist B/P/S"
+            )
         sections.append(
             f"{icons.INSPIRATION} Inspiration: {'Yes' if inspiration else 'No'}\n"
             f"{icons.CONDITIONS} Conditions: {conditions_line}"

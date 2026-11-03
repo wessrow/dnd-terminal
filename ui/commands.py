@@ -41,6 +41,9 @@ def list_commands(app) -> list[tuple[str, callable]]:
         for level, _, _ in sheet.spell_slots(app.character_data):
             commands.append((f"{icons.SPELLS}  Use Level {level} Spell Slot", lambda lvl=level: app.use_spell_slot(lvl)))
             commands.append((f"{icons.SPELLS}  Restore Level {level} Spell Slot", lambda lvl=level: app.restore_spell_slot(lvl)))
+        if sheet.rage(app.character_data):
+            raging = app.combat.is_raging()
+            commands.append((f"{icons.RESOURCES}  {'End Rage' if raging else 'Enter Rage'}", app.toggle_rage))
         for res in sheet.class_resources(app.character_data):
             name = res["name"]
             commands.append((f"{icons.RESOURCES}  Use {name}", lambda n=name: app.use_resource(n)))
