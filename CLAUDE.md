@@ -275,6 +275,16 @@ project root regardless of which package `state_store.py` lives in - don't
   the same Monk fixture) - D&D Beyond doesn't document the mapping anywhere,
   and an unconfirmed id is left blank rather than guessed, since a wrong
   damage type shown at the table is worse than no damage type shown.
+- **Rage's bonus damage is NOT in the JSON.** Checked against a real level-6
+  Berserker: the only Rage data is one `limitedUse` action (`"Rage (Enter)"`,
+  `maxUses`/`numberUsed`) - no modifier, no number, no resistance/advantage
+  entries; the description just points at "the Rage Damage column of the
+  Barbarian Features table". So `sheet.rage` detects the feature by class
+  feature name `"Rage"` (not "Barbarian") and hardcodes the +2/+3/+4 (levels
+  1/9/16) progression as a last resort. The on/off state is local
+  (`state["raging"]`, `CombatTracker.toggle_rage`): entering spends a Rage use,
+  ending is free, any rest ends it. `sheet.attacks(data, rage_bonus)` adds it to
+  Strength-based attacks only.
 - **Familiars (Find Familiar, e.g. via a Warlock's Pact of the Chain) have
   their expanded form list written directly into the granting feature's own
   description text, tagged for D&D Beyond's own UI to hyperlink.** A
