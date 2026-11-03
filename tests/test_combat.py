@@ -233,6 +233,7 @@ def test_reset_to_baseline_clears_every_local_override():
         "inspiration_override": None,
         "resources_used": {},
         "spell_uses": {},
+        "raging": False,
         "familiar_form": None,
         "familiar_hp": None,
     }
@@ -245,3 +246,40 @@ def test_reset_to_baseline_falls_back_to_live_ddb_values():
     t.reset_to_baseline()
     current, max_hp, _ = t.effective_hp()
     assert current == max_hp  # back to whatever character_data itself says
+
+
+# -- Rage ------------------------------------------------------------------ #
+
+def test_toggle_rage_spends_a_use_and_ending_is_free():
+    t = tracker(barbarian_character())
+    assert t.toggle_rage() is True
+    assert t.is_raging() and t.rage_damage_bonus() == 2
+    used, _ = next((r["used"], r["available"]) for r in t.effective_resources() if r["name"] == "Rage")
+    assert used == 1
+    assert t.toggle_rage() is False
+    assert not t.is_raging() and t.rage_damage_bonus() == 0
+    used, _ = next((r["used"], r["available"]) for r in t.effective_resources() if r["name"] == "Rage")
+    assert used == 1
+
+
+def test_cannot_rage_with_no_uses_left():
+    t = tracker(barbarian_character())
+    for _ in range(3):
+        t.use_resource("Rage")
+    assert t.toggle_rage() is None
+    assert not t.is_raging()
+
+
+def test_non_barbarian_cannot_rage():
+    t = tracker(fighter_character())
+    assert t.toggle_rage() is None
+
+
+def test_rests_end_rage():
+    t = tracker(barbarian_character())
+    t.toggle_rage()
+    assert t.short_rest() is True
+    assert not t.is_raging()
+    t.toggle_rage()
+    t.long_rest()
+    assert not t.is_raging()

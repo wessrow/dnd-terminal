@@ -215,9 +215,35 @@ class CombatTracker:
             return
         self.state["resources_used"][name] = max(0, resources[name]["used"] - 1)
 
+    # -- Rage ----------------------------------------------------------- #
+
+    def is_raging(self) -> bool:
+        return bool(self.state.get("raging")) and sheet.rage(self.character_data) is not None
+
+    def rage_damage_bonus(self) -> int:
+        """Flat Rage Damage to add to Strength attacks right now (0 if not raging)."""
+        info = sheet.rage(self.character_data)
+        return info["damage_bonus"] if info and self.is_raging() else 0
+
+    def toggle_rage(self) -> bool | None:
+        """Enter or end a Rage. Entering spends a use of the Rage resource;
+        ending is free. Returns the new raging state, or None if it can't be
+        entered (no Rage feature, or no uses left)."""
+        info = sheet.rage(self.character_data)
+        if not info:
+            return None
+        if self.is_raging():
+            self.state["raging"] = False
+            return False
+        if info["resource"] and not self.use_resource(info["resource"]):
+            return None
+        self.state["raging"] = True
+        return True
+
     # -- Rests ------------------------------------------------------------ #
 
     def long_rest(self) -> None:
+        self.state["raging"] = False
         _, max_hp, _ = sheet.hit_points(self.character_data)
         self.state["current_hp"] = max_hp
         self.state["temp_hp"] = 0
@@ -231,7 +257,8 @@ class CombatTracker:
 
     def short_rest(self) -> bool:
         """Returns whether there was anything to restore."""
-        restored = False
+        restored = bool(self.state.get("raging"))  # a rest ends any Rage
+        self.state["raging"] = False
         if sheet.pact_magic_slots(self.character_data):
             self.state["pact_magic_used"] = 0
             restored = True
@@ -253,6 +280,7 @@ class CombatTracker:
         this session tracked locally" escape hatch. Deliberately does not touch
         `character_data` itself (that's always D&D Beyond's, never local)."""
         self.state["active_conditions"] = []
+        self.state["raging"] = False
         self.state["current_hp"] = None
         self.state["temp_hp"] = None
         self.state["pact_magic_used"] = None

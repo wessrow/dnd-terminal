@@ -663,7 +663,46 @@ def _weapon_attack_ability_mod(data: dict, weapon_def: dict) -> int:
     return str_mod
 
 
-def attacks(data: dict) -> list[dict]:
+def _weapon_uses_strength(data: dict, weapon_def: dict) -> bool:
+    """Mirror of _weapon_attack_ability_mod's choice, but answering "was it
+    Strength?" - Rage Damage only applies to Strength-based attacks."""
+    scores = ability_scores(data)
+    properties = {p["name"] for p in (weapon_def.get("properties") or [])}
+    if "Finesse" in properties:
+        return ability_modifier(scores[1]) >= ability_modifier(scores[2])
+    return weapon_def.get("attackType") != 2
+
+
+# Rage Damage by Barbarian level. NOT in the character JSON - Rage's own
+# description just says "as shown in the Rage Damage column of the Barbarian
+# Features table", and no modifier/action field carries the number (checked
+# against a real level-6 Berserker). Same +2/+3/+4 progression in the 2014 and
+# 2024 rules. HARDCODED as a last resort for that reason - it's the one value
+# here that does not self-describe in the JSON.
+_RAGE_DAMAGE_BY_LEVEL = [(16, 4), (9, 3), (1, 2)]
+
+
+def rage(data: dict) -> dict | None:
+    """Rage info for any class with a class feature literally named "Rage"
+    (same by-feature-name approach as Pact Magic, not a "Barbarian" check),
+    or None. `resource` is the name of its limited-use action (in
+    class_resources) so entering a Rage can spend a use; `damage_bonus` is the
+    flat Rage Damage for that class's level."""
+    for cls in data["classes"]:
+        if not any(f["name"] == "Rage" for f in cls["definition"].get("classFeatures") or []):
+            continue
+        resource = None
+        for action in data["actions"].get("class") or []:
+            name = action.get("name") or ""
+            if (name == "Rage" or name.startswith("Rage (")) and action.get("limitedUse"):
+                resource = name
+                break
+        bonus = next(b for min_level, b in _RAGE_DAMAGE_BY_LEVEL if cls["level"] >= min_level)
+        return {"resource": resource, "damage_bonus": bonus}
+    return None
+
+
+def attacks(data: dict, rage_bonus: int = 0) -> list[dict]:
     """Every attack the character can currently make - equipped-weapon
     attacks, plus any class/race/feat action D&D Beyond itself flags as a
     standalone attack (a Monk's Unarmed Strike/Flurry of Blows, Deflect
@@ -692,6 +731,9 @@ def attacks(data: dict) -> list[dict]:
     - verified against a real Monk (Unarmed Strike/Flurry both correctly
     included), a real Cleric (Blessed Strikes correctly excluded), and a real
     Rogue (Sneak Attack correctly excluded).
+
+    `rage_bonus` (non-zero only while raging, see `rage`) is added to the
+    damage of every Strength-based attack and noted on it.
     """
     scores = ability_scores(data)
     prof_bonus = proficiency_bonus(data)
@@ -718,12 +760,15 @@ def attacks(data: dict) -> list[dict]:
         ]
 
         properties = [p["name"] for p in (d.get("properties") or [])]
+        rage_here = rage_bonus if rage_bonus and _weapon_uses_strength(data, d) else 0
+        if rage_here:
+            conditional_notes.append(f"Rage +{rage_here}")
         results.append(
             {
                 "name": d["name"],
                 "attack_type": "Ranged" if d.get("attackType") == 2 else "Melee",
                 "to_hit": ability_mod + (prof_bonus if proficient else 0) + magic_bonus,
-                "damage": _format_damage(d["damage"], None, ability_mod + magic_bonus),
+                "damage": _format_damage(d["damage"], None, ability_mod + magic_bonus + rage_here),
                 "damage_type": d.get("damageType") or "",
                 "range": _format_range(d.get("range"), d.get("longRange")),
                 "notes": ", ".join(properties + conditional_notes),
@@ -753,16 +798,24 @@ def attacks(data: dict) -> list[dict]:
 
             action_range = action.get("range") or {}
             range_ft = action_range.get("range") or (None if is_ranged else 5)
+            uses_strength = (
+                stat_id == 1
+                if stat_id
+                else (ability_modifier(scores[1]) >= ability_modifier(scores[2]))
+                if action.get("isMartialArts")
+                else not is_ranged
+            )
+            rage_here = rage_bonus if uses_strength else 0
 
             results.append(
                 {
                     "name": action["name"],
                     "attack_type": "Ranged" if is_ranged else "Melee",
                     "to_hit": to_hit,
-                    "damage": _format_damage(action.get("dice"), action.get("value"), ability_mod),
+                    "damage": _format_damage(action.get("dice"), action.get("value"), ability_mod + rage_here),
                     "damage_type": DAMAGE_TYPE_IDS.get(action.get("damageTypeId"), ""),
                     "range": _format_range(range_ft, action_range.get("longRange")),
-                    "notes": strip_html(action.get("snippet") or ""),
+                    "notes": strip_html(action.get("snippet") or "") + (f" Rage +{rage_here}" if rage_here else ""),
                     "source": source_label,
                     "proficient": bool(action.get("isProficient")),
                 }

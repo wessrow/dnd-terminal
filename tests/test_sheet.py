@@ -408,3 +408,34 @@ def test_spell_damage_without_agonizing_blast_has_no_bonus():
 
     blast = next(s for s in sheet.known_spells(_warlock_with_eldritch_blast(1, agonizing=False)) if s["name"] == "Eldritch Blast")
     assert blast["damage"] == "1d10" and blast["beams"] == 1
+
+
+# -- Rage damage -------------------------------------------------------------- #
+
+def test_rage_damage_scales_with_barbarian_level():
+    from .fixtures import barbarian_character
+    data = barbarian_character()
+    assert sheet.rage(data) == {"resource": "Rage", "damage_bonus": 2}
+    for level, bonus in [(8, 2), (9, 3), (15, 3), (16, 4)]:
+        data["classes"][0]["level"] = level
+        assert sheet.rage(data)["damage_bonus"] == bonus
+
+
+def test_no_rage_for_non_barbarian():
+    from .fixtures import fighter_character
+    assert sheet.rage(fighter_character()) is None
+
+
+def test_rage_bonus_applies_to_strength_weapon_attacks_only():
+    from .fixtures import barbarian_character
+    data = barbarian_character()  # STR 18 (+4), DEX 14
+    data["inventory"] = [
+        {"equipped": True, "definition": {"name": "Greataxe", "filterType": "Weapon", "attackType": 1,
+                                          "damage": {"diceString": "1d12"}, "categoryId": 2, "properties": []}},
+        {"equipped": True, "definition": {"name": "Longbow", "filterType": "Weapon", "attackType": 2,
+                                          "damage": {"diceString": "1d8"}, "categoryId": 2, "properties": []}},
+    ]
+    plain = {a["name"]: a["damage"] for a in sheet.attacks(data)}
+    raging = {a["name"]: a["damage"] for a in sheet.attacks(data, rage_bonus=2)}
+    assert plain["Greataxe"] == "1d12+4" and raging["Greataxe"] == "1d12+6"
+    assert plain["Longbow"] == raging["Longbow"]
